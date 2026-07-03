@@ -83,7 +83,54 @@ function Test-HttpOk {
     }
     return $response.StatusCode
   } catch {
-    throw "$Name is not reachable at $Url. Check backend-api.err.log or frontend-vite.err.log. $($_.Exception.Message)"
+    $backendError = Get-LogTail -Path (Join-Path $workspace 'backend-api.err.log')
+    $frontendError = Get-LogTail -Path (Join-Path $workspace 'frontend-vite.err.log')
+    throw "$Name is not reachable at $Url. $($_.Exception.Message)`nbackend-api.err.log:`n$backendError`nfrontend-vite.err.log:`n$frontendError"
+  }
+}
+
+function Get-LogTail {
+  param([string]$Path)
+
+  if (-not (Test-Path $Path)) {
+    return '(log file not created)'
+  }
+
+  $content = Get-Content -Path $Path -Tail 30 -ErrorAction SilentlyContinue
+  if (-not $content) {
+    return '(log file is empty)'
+  }
+
+  return ($content -join "`n")
+}
+
+function Test-TcpReachable {
+  param([string]$HostName, [int]$Port, [string]$Name)
+
+  $client = [System.Net.Sockets.TcpClient]::new()
+  try {
+    $connect = $client.ConnectAsync($HostName, $Port)
+    if (-not $connect.Wait(1500) -or -not $client.Connected) {
+      throw "$Name is not reachable at $HostName`:$Port"
+    }
+  } finally {
+    $client.Dispose()
+  }
+}
+
+function Test-DatabaseReachable {
+  param([string]$DatabaseUrl)
+
+  if (-not $DatabaseUrl.StartsWith('postgresql://') -and -not $DatabaseUrl.StartsWith('postgres://')) {
+    return
+  }
+
+  try {
+    $uri = [Uri]$DatabaseUrl
+    $port = if ($uri.Port -gt 0) { $uri.Port } else { 5432 }
+    Test-TcpReachable -HostName $uri.Host -Port $port -Name 'PostgreSQL'
+  } catch {
+    throw "PostgreSQL preflight failed. Check WORKSPACE_DATABASE_URL or start PostgreSQL first. $($_.Exception.Message)"
   }
 }
 
@@ -96,6 +143,8 @@ foreach ($file in @('backend-api.out.log', 'backend-api.err.log', 'frontend-vite
 Stop-PortProcess -Port $frontendPort
 Stop-PortProcess -Port $backendPort
 Start-Sleep -Seconds 2
+
+Test-DatabaseReachable -DatabaseUrl $databaseUrl
 
 $env:WORKSPACE_DATABASE_URL = $databaseUrl
 $env:WORKSPACE_API_PORT = "$backendPort"

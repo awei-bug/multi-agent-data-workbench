@@ -1,10 +1,38 @@
 import { useEffect, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import { BarChart, HeatmapChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
+import {
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  RadarComponent,
+  TitleComponent,
+  TooltipComponent,
+  VisualMapComponent,
+} from 'echarts/components';
+import { init, use } from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
 import type { EChartsOption } from 'echarts';
 
 type ChartBoardProps = {
   onTitleChange: (title: string) => void;
 };
+
+use([
+  BarChart,
+  HeatmapChart,
+  LineChart,
+  PieChart,
+  RadarChart,
+  ScatterChart,
+  CanvasRenderer,
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  RadarComponent,
+  TitleComponent,
+  TooltipComponent,
+  VisualMapComponent,
+]);
 
 const chartTypes = ['折线图', '柱状图', '面积图', '饼图', '环形图', '散点图', '雷达图', '热力图'] as const;
 type ChartType = (typeof chartTypes)[number];
@@ -125,7 +153,7 @@ function ChartBoard({ onTitleChange }: ChartBoardProps) {
       return;
     }
 
-    const chart = echarts.init(chartRef.current);
+    const chart = init(chartRef.current);
     chart.setOption(buildChartOption(title, chartType));
     const resize = () => chart.resize();
 

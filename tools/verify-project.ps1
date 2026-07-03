@@ -29,7 +29,7 @@ function Run-Native {
 Run-Step 'backend tests' {
   Push-Location $backendDir
   try {
-    Run-Native 'py' @('-m', 'unittest', 'tests.test_workspace_api', 'tests.test_workflow_service')
+    Run-Native 'py' @('-m', 'unittest', 'tests.test_config', 'tests.test_workspace_api', 'tests.test_workflow_service')
   } finally {
     Pop-Location
   }

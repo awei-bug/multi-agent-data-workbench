@@ -17,6 +17,7 @@ class ConfigTest(unittest.TestCase):
                 "WORKSPACE_DATABASE_URL": "postgresql://postgres:123456@127.0.0.1:5432/workbench",
                 "WORKSPACE_MODEL_TIMEOUT_SECONDS": "12.5",
                 "WORKSPACE_ENABLE_AUDIT_EVENTS": "false",
+                "WORKSPACE_MAX_REQUEST_BODY_BYTES": "1024",
                 "WORKSPACE_CORS_ORIGINS": "http://127.0.0.1:5174, http://localhost:5174",
             }
         )
@@ -27,6 +28,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.database_url, "postgresql://postgres:123456@127.0.0.1:5432/workbench")
         self.assertEqual(settings.timeout_seconds, 12.5)
         self.assertFalse(settings.enable_audit_events)
+        self.assertEqual(settings.max_request_body_bytes, 1024)
         self.assertEqual(settings.cors_origins, ["http://127.0.0.1:5174", "http://localhost:5174"])
 
 

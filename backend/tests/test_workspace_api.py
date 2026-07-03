@@ -67,6 +67,21 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertEqual(response.headers["x-frame-options"], "DENY")
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
 
+    def test_rejects_request_body_over_configured_limit(self) -> None:
+        app = create_app(
+            api_key="test-key",
+            base_url="https://apihub.agnes-ai.com/v1",
+            model="Agnes 2.0 Flash",
+            repository_path=str(self.db_path),
+            max_request_body_bytes=20,
+        )
+        client = TestClient(app)
+
+        response = client.post("/api/intent/parse", json={"request": "x" * 64})
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["message"], "request body too large")
+
     def test_health_check_reports_database_failure_as_unavailable(self) -> None:
         app = create_app(
             api_key="test-key",

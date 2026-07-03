@@ -63,6 +63,7 @@ def create_app(
     model_timeout_seconds: float = 60.0,
     enable_audit_events: bool = True,
     cors_origins: list[str] | None = None,
+    max_request_body_bytes: int = 2_000_000,
 ) -> FastAPI:
     app = FastAPI()
     allowed_origins = cors_origins or [
@@ -78,6 +79,18 @@ def create_app(
     async def request_log_middleware(request: Request, call_next):
         request_id = request.headers.get("x-request-id") or str(uuid4())
         started_at = time.perf_counter()
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > max_request_body_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={"message": "request body too large", "requestId": request_id},
+                headers={
+                    "x-request-id": request_id,
+                    "x-content-type-options": "nosniff",
+                    "x-frame-options": "DENY",
+                    "referrer-policy": "no-referrer",
+                },
+            )
         try:
             response = await call_next(request)
         except Exception:

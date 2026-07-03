@@ -21,6 +21,7 @@ def main() -> None:
         model_timeout_seconds=settings.timeout_seconds,
         enable_audit_events=settings.enable_audit_events,
         cors_origins=settings.cors_origins,
+        max_request_body_bytes=settings.max_request_body_bytes,
     )
     uvicorn.run(app, host=settings.host, port=settings.port)
 

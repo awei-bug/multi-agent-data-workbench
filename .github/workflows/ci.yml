@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - run: python -m unittest tests.test_config tests.test_migrations tests.test_workspace_api tests.test_workflow_service
+      - run: python -m unittest tests.test_agnes_client tests.test_config tests.test_migrations tests.test_workspace_api tests.test_workflow_service
 
   frontend:
     name: Frontend tests and build

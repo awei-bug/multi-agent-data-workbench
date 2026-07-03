@@ -216,7 +216,24 @@ def advance_workflow_with_model(task: dict, chat_client) -> dict:
         return updated
 
     running_node = nodes[running_index]
-    model_output = asyncio.run(_generate_node_output(running_node, updated, chat_client))
+    try:
+        model_output = asyncio.run(_generate_node_output(running_node, updated, chat_client))
+    except Exception as error:
+        nodes[running_index]["status"] = "failed"
+        snapshot["nodes"] = nodes
+        snapshot["phase"] = "failed"
+        snapshot["logMessage"] = f"{running_node['label']} 执行失败：{error}"
+        snapshot["context"] = _context_for_label(
+            snapshot["context"],
+            running_node["label"],
+            snapshot["logMessage"],
+            [f"模型调用失败：{error}"],
+        )
+        updated["status"] = "鎵ц澶辫触"
+        updated["snapshot"] = snapshot
+        updated["risks"] = snapshot["context"]["risks"]
+        return updated
+
     nodes[running_index]["status"] = "success"
 
     if running_index + 1 < len(nodes):

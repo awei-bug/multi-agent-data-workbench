@@ -81,6 +81,46 @@ class WorkflowServiceTest(unittest.TestCase):
         self.assertEqual(updated["snapshot"]["nodes"][4]["status"], "success")
         self.assertEqual(updated["snapshot"]["nodes"][5]["status"], "running")
 
+    def test_model_failure_marks_current_node_failed(self) -> None:
+        class BrokenChatClient:
+            async def complete(self, prompt: str) -> str:
+                raise RuntimeError("model unavailable")
+
+        task = {
+            "status": "running",
+            "summary": "draft",
+            "request": "analyze sales anomalies",
+            "snapshot": {
+                "phase": "running",
+                "logMessage": "analysis pending",
+                "nodes": [
+                    {"id": "source", "label": "Source Agent", "status": "success"},
+                    {"id": "clean", "label": "Clean Agent", "status": "success"},
+                    {"id": "metric", "label": "Metric Agent", "status": "success"},
+                    {"id": "chart", "label": "Chart Agent", "status": "success"},
+                    {"id": "analysis", "label": "Analysis Agent", "status": "running"},
+                    {"id": "report", "label": "Report Agent", "status": "pending"},
+                    {"id": "audit", "label": "Audit Agent", "status": "pending"},
+                ],
+                "context": {
+                    "activeAgent": "Analysis Agent",
+                    "inputSummary": "analysis input",
+                    "outputSummary": "analysis output",
+                    "latestLog": "analysis pending",
+                    "risks": [],
+                },
+            },
+            "risks": [],
+        }
+
+        updated = advance_workflow_with_model(task, BrokenChatClient())
+
+        self.assertEqual(updated["summary"], "draft")
+        self.assertEqual(updated["status"], "鎵ц澶辫触")
+        self.assertEqual(updated["snapshot"]["phase"], "failed")
+        self.assertEqual(updated["snapshot"]["nodes"][4]["status"], "failed")
+        self.assertIn("model unavailable", updated["snapshot"]["logMessage"])
+
 
 if __name__ == "__main__":
     unittest.main()

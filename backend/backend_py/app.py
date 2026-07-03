@@ -129,17 +129,29 @@ def create_app(
     )
 
     @app.get("/api/health")
-    def health_check() -> dict:
-        database = repo.ping()
+    def health_check():
+        model_status = {
+            "configured": bool(api_key),
+            "baseUrl": base_url,
+            "name": model,
+            "timeoutSeconds": model_timeout_seconds,
+        }
+        try:
+            database = repo.ping()
+        except Exception as error:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unavailable",
+                    "database": {"ok": False, "error": str(error)},
+                    "model": model_status,
+                },
+            )
+
         return {
             "status": "ok",
             "database": database,
-            "model": {
-                "configured": bool(api_key),
-                "baseUrl": base_url,
-                "name": model,
-                "timeoutSeconds": model_timeout_seconds,
-            },
+            "model": model_status,
         }
 
     @app.get("/api/active-task")

@@ -18,6 +18,11 @@ class BrokenRepository:
         raise RuntimeError("database unavailable")
 
 
+class BrokenHealthRepository(BrokenRepository):
+    def ping(self) -> dict:
+        raise RuntimeError("database unavailable")
+
+
 class WorkspaceApiTest(unittest.TestCase):
     def setUp(self) -> None:
         logging.getLogger("workspace_api").disabled = True
@@ -61,6 +66,22 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertEqual(response.headers["x-frame-options"], "DENY")
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+
+    def test_health_check_reports_database_failure_as_unavailable(self) -> None:
+        app = create_app(
+            api_key="test-key",
+            base_url="https://apihub.agnes-ai.com/v1",
+            model="Agnes 2.0 Flash",
+            repository=BrokenHealthRepository(),  # type: ignore[arg-type]
+        )
+        client = TestClient(app)
+
+        response = client.get("/api/health")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], "unavailable")
+        self.assertEqual(response.json()["database"]["ok"], False)
+        self.assertIn("database unavailable", response.json()["database"]["error"])
 
     def test_unhandled_errors_return_stable_json(self) -> None:
         app = create_app(

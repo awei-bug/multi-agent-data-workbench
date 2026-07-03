@@ -29,7 +29,7 @@ function Run-Native {
 Run-Step 'backend tests' {
   Push-Location $backendDir
   try {
-    Run-Native 'py' @('-m', 'unittest', 'tests.test_config', 'tests.test_workspace_api', 'tests.test_workflow_service')
+    Run-Native 'py' @('-m', 'unittest', 'tests.test_config', 'tests.test_migrations', 'tests.test_workspace_api', 'tests.test_workflow_service')
   } finally {
     Pop-Location
   }
@@ -59,6 +59,10 @@ foreach ($target in @('frontend\dist', 'backend\backend_py\__pycache__', 'backen
     Remove-Item -LiteralPath $path -Recurse -Force
   }
 }
+
+Get-ChildItem -Path $workspace -Recurse -Force -Directory -Filter __pycache__ -ErrorAction SilentlyContinue |
+  Where-Object { $_.FullName -notlike '*\node_modules\*' } |
+  Remove-Item -Recurse -Force
 
 Get-ChildItem -Path $workspace -Recurse -Force -Include *.pyc,*.tsbuildinfo -ErrorAction SilentlyContinue | Remove-Item -Force
 

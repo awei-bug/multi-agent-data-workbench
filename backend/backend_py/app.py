@@ -64,8 +64,11 @@ def create_app(
     enable_audit_events: bool = True,
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 2_000_000,
+    rate_limit_per_minute: int = 120,
 ) -> FastAPI:
     app = FastAPI()
+    # ponytail: per-process limiter; use Redis/API gateway when running multiple backend replicas.
+    rate_windows: dict[str, tuple[float, int]] = {}
     allowed_origins = cors_origins or [
         "http://127.0.0.1:4173",
         "http://localhost:4173",
@@ -79,6 +82,29 @@ def create_app(
     async def request_log_middleware(request: Request, call_next):
         request_id = request.headers.get("x-request-id") or str(uuid4())
         started_at = time.perf_counter()
+        client_host = request.client.host if request.client else "unknown"
+        window_started, request_count = rate_windows.get(client_host, (started_at, 0))
+        if started_at - window_started >= 60:
+            window_started, request_count = started_at, 0
+        request_count += 1
+        rate_windows[client_host] = (window_started, request_count)
+        if rate_limit_per_minute > 0 and request_count > rate_limit_per_minute:
+            retry_after = max(1, int(60 - (started_at - window_started)))
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "message": "too many requests",
+                    "requestId": request_id,
+                    "retryAfterSeconds": retry_after,
+                },
+                headers={
+                    "x-request-id": request_id,
+                    "retry-after": str(retry_after),
+                    "x-content-type-options": "nosniff",
+                    "x-frame-options": "DENY",
+                    "referrer-policy": "no-referrer",
+                },
+            )
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > max_request_body_bytes:
             return JSONResponse(

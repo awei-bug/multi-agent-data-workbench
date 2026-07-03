@@ -14,6 +14,7 @@ class RuntimeSettings:
     timeout_seconds: float
     enable_audit_events: bool
     max_request_body_bytes: int
+    rate_limit_per_minute: int
     cors_origins: list[str] | None
 
 
@@ -33,5 +34,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         timeout_seconds=float(values.get("WORKSPACE_MODEL_TIMEOUT_SECONDS", "60")),
         enable_audit_events=values.get("WORKSPACE_ENABLE_AUDIT_EVENTS", "true").lower() != "false",
         max_request_body_bytes=int(values.get("WORKSPACE_MAX_REQUEST_BODY_BYTES", "2000000")),
+        rate_limit_per_minute=int(values.get("WORKSPACE_RATE_LIMIT_PER_MINUTE", "120")),
         cors_origins=cors_origins or None,
     )

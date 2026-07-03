@@ -18,6 +18,7 @@ class ConfigTest(unittest.TestCase):
                 "WORKSPACE_MODEL_TIMEOUT_SECONDS": "12.5",
                 "WORKSPACE_ENABLE_AUDIT_EVENTS": "false",
                 "WORKSPACE_MAX_REQUEST_BODY_BYTES": "1024",
+                "WORKSPACE_RATE_LIMIT_PER_MINUTE": "30",
                 "WORKSPACE_CORS_ORIGINS": "http://127.0.0.1:5174, http://localhost:5174",
             }
         )
@@ -29,6 +30,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.timeout_seconds, 12.5)
         self.assertFalse(settings.enable_audit_events)
         self.assertEqual(settings.max_request_body_bytes, 1024)
+        self.assertEqual(settings.rate_limit_per_minute, 30)
         self.assertEqual(settings.cors_origins, ["http://127.0.0.1:5174", "http://localhost:5174"])
 
 

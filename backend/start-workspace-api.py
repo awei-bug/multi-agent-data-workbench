@@ -22,6 +22,7 @@ def main() -> None:
         enable_audit_events=settings.enable_audit_events,
         cors_origins=settings.cors_origins,
         max_request_body_bytes=settings.max_request_body_bytes,
+        rate_limit_per_minute=settings.rate_limit_per_minute,
     )
     uvicorn.run(app, host=settings.host, port=settings.port)
 

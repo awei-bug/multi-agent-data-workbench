@@ -82,6 +82,24 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertEqual(response.json()["message"], "request body too large")
 
+    def test_rate_limits_repeated_requests(self) -> None:
+        app = create_app(
+            api_key="test-key",
+            base_url="https://apihub.agnes-ai.com/v1",
+            model="Agnes 2.0 Flash",
+            repository_path=str(self.db_path),
+            rate_limit_per_minute=2,
+        )
+        client = TestClient(app)
+
+        self.assertEqual(client.get("/api/health").status_code, 200)
+        self.assertEqual(client.get("/api/health").status_code, 200)
+        response = client.get("/api/health")
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["message"], "too many requests")
+        self.assertGreaterEqual(response.json()["retryAfterSeconds"], 1)
+
     def test_health_check_reports_database_failure_as_unavailable(self) -> None:
         app = create_app(
             api_key="test-key",

@@ -46,6 +46,12 @@ def _audit(repo: TaskRepository, action: str, target: str, payload: dict | None 
     repo.add_audit_event(action, target, payload)
 
 
+def _add_security_headers(response) -> None:
+    response.headers["x-content-type-options"] = "nosniff"
+    response.headers["x-frame-options"] = "DENY"
+    response.headers["referrer-policy"] = "no-referrer"
+
+
 def create_app(
     api_key: str,
     base_url: str,
@@ -86,11 +92,17 @@ def create_app(
             return JSONResponse(
                 status_code=500,
                 content={"message": "internal server error", "requestId": request_id},
-                headers={"x-request-id": request_id},
+                headers={
+                    "x-request-id": request_id,
+                    "x-content-type-options": "nosniff",
+                    "x-frame-options": "DENY",
+                    "referrer-policy": "no-referrer",
+                },
             )
 
         duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
         response.headers["x-request-id"] = request_id
+        _add_security_headers(response)
         logger.info(
             "request method=%s path=%s status=%s duration_ms=%s request_id=%s",
             request.method,

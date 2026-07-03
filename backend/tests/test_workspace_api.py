@@ -55,6 +55,13 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertTrue(payload["model"]["configured"])
         self.assertEqual(payload["model"]["timeoutSeconds"], 60.0)
 
+    def test_responses_include_basic_security_headers(self) -> None:
+        response = self.client.get("/api/health")
+
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(response.headers["x-frame-options"], "DENY")
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+
     def test_unhandled_errors_return_stable_json(self) -> None:
         app = create_app(
             api_key="test-key",

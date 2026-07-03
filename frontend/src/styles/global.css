@@ -843,6 +843,19 @@ select:focus-visible,
   border-left: 4px solid #c88a22;
 }
 
+.failure-callout {
+  border: 1px solid rgba(210, 71, 71, 0.28);
+  border-left: 4px solid var(--status-failed);
+  border-radius: var(--radius-sm);
+  background: rgba(210, 71, 71, 0.08);
+  padding: var(--space-3);
+}
+
+.failure-callout p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
 @keyframes workflowShimmer {
   100% {
     transform: translateX(100%);

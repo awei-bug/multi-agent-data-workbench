@@ -83,6 +83,12 @@ function ExecutionTimeline({
           终止任务
         </button>
       </div>
+      {phase === 'failed' ? (
+        <div className="failure-callout" role="alert">
+          <strong>当前节点执行失败</strong>
+          <p>请先查看运行日志和当前节点上下文，修正数据或需求后点击“重试当前节点”。</p>
+        </div>
+      ) : null}
       <div className={`log-card ${getLogTone(phase)}`}>
         <strong>运行日志</strong>
         <p>{logMessage}</p>

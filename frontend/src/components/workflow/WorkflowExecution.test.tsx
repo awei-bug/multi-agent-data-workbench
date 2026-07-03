@@ -65,4 +65,16 @@ describe('workflow execution', () => {
     const logCard = screen.getByText('运行日志').closest('.log-card') as HTMLElement;
     expect(within(logCard).getByText('销售额字段缺少数值列映射，请将数值字段映射为“销售额”。')).toBeInTheDocument();
   });
+  it('shows a visible recovery hint when the current agent fails', async () => {
+    const user = userEvent.setup();
+
+    render(<WorkspacePage />);
+
+    await switchToExecution(user);
+    await user.click(screen.getByRole('button', { name: '启动任务' }));
+    await user.click(screen.getByRole('button', { name: '模拟失败' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('当前节点执行失败');
+    expect(screen.getByRole('button', { name: '重试当前节点' })).toBeEnabled();
+  });
 });

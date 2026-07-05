@@ -5,9 +5,14 @@ import AppShell from './components/layout/AppShell';
 import { WorkbenchShellContext } from './context/WorkbenchShellContext';
 import { createMockTaskRepository } from './mock/mockTaskRepository';
 import AsyncWorkspacePage from './pages/AsyncWorkspacePage';
+import ChatAnalysisPage from './pages/ChatAnalysisPage';
+import DashboardPage from './pages/DashboardPage';
 import DataSourcesPage from './pages/DataSourcesPage';
 import HistoryPage from './pages/HistoryPage';
+import ReportsPage from './pages/ReportsPage';
+import SettingsPage from './pages/SettingsPage';
 import TemplatesPage from './pages/TemplatesPage';
+import WorkflowDesignerPage from './pages/WorkflowDesignerPage';
 import WorkspacePage from './pages/WorkspacePage';
 import { defaultWorkbenchContext } from './types/workbench';
 
@@ -89,14 +94,24 @@ function App() {
   }, []);
 
   const page =
-    routePath === '/data-sources' ? (
+    routePath === '/dashboard' ? (
+      <DashboardPage />
+    ) : routePath === '/chat-analysis' ? (
+      <ChatAnalysisPage />
+    ) : routePath === '/workflow-designer' ? (
+      <WorkflowDesignerPage />
+    ) : routePath === '/data-sources' ? (
       <DataSourcesPage />
+    ) : routePath === '/reports' ? (
+      <ReportsPage />
     ) : routePath === '/templates' ? (
       <TemplatesPage />
     ) : routePath === '/workspace-async' ? (
       <AsyncWorkspacePage />
     ) : routePath === '/history' ? (
       <HistoryPage />
+    ) : routePath === '/settings' ? (
+      <SettingsPage />
     ) : (
       <WorkspacePage onFocusedNodeChange={setFocusedNodeId} />
     );

@@ -57,7 +57,7 @@ describe('workflow execution', () => {
     });
 
     await user.upload(screen.getByLabelText('上传 CSV'), file);
-    await user.selectOptions(screen.getByRole('combobox', { name: '映射 sales' }), 'sales');
+    await user.selectOptions(await screen.findByRole('combobox', { name: '映射 sales' }), 'sales');
     await user.click(screen.getByRole('button', { name: '确认字段映射' }));
     await switchToExecution(user);
     await user.click(screen.getByRole('button', { name: '启动任务' }));

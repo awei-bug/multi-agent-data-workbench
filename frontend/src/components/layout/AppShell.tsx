@@ -6,11 +6,16 @@ import { useWorkbenchShell } from '../../context/WorkbenchShellContext';
 import ContextPanel from './ContextPanel';
 
 const routeMeta: Record<string, { icon: string; label: string; crumb: string; title: string }> = {
-  '/workspace': { icon: '01', label: '智能体工作台', crumb: '新建任务', title: '多 Agent 主流程' },
-  '/data-sources': { icon: '02', label: '数据集管理', crumb: '数据接入', title: '数据源管理' },
-  '/templates': { icon: '03', label: '模板库', crumb: '模板复用', title: '模板库' },
-  '/workspace-async': { icon: '04', label: '工作流沙箱', crumb: '异步沙箱', title: '异步工作台沙箱' },
-  '/history': { icon: '05', label: '历史会话', crumb: '历史回放', title: '历史任务' },
+  '/dashboard': { icon: '01', label: '总览仪表盘', crumb: '平台总览', title: '总览仪表盘' },
+  '/workspace': { icon: '02', label: '智能体工作台', crumb: '新建任务', title: '多 Agent 主流程' },
+  '/chat-analysis': { icon: '03', label: '对话分析', crumb: '对话分析', title: '对话分析' },
+  '/workflow-designer': { icon: '04', label: '工作流画布', crumb: '流程编排', title: '工作流画布' },
+  '/data-sources': { icon: '05', label: '数据集管理', crumb: '数据接入', title: '数据源管理' },
+  '/reports': { icon: '06', label: '报告中心', crumb: '报告管理', title: '报告中心' },
+  '/templates': { icon: '07', label: '模板库', crumb: '模板复用', title: '模板库' },
+  '/history': { icon: '08', label: '历史会话', crumb: '历史回放', title: '历史任务' },
+  '/workspace-async': { icon: '09', label: '异步沙箱', crumb: '异步沙箱', title: '异步工作台沙箱' },
+  '/settings': { icon: '10', label: '系统设置', crumb: '系统设置', title: '系统设置' },
 };
 
 type AppShellProps = {

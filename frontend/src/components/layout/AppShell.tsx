@@ -30,10 +30,13 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   const location = useLocation();
   const navigate = useNavigate();
   const [contextCollapsed, setContextCollapsed] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTool, setActiveTool] = useState<'notifications' | 'help' | null>(null);
   const activePath = routePath ?? location.pathname;
   const currentRoute = routeMeta[activePath] ?? routeMeta['/workspace'];
   const finishedNodes = activeTask.snapshot.nodes.filter((node) => node.status === 'success').length;
   const runningNode = activeTask.snapshot.nodes.find((node) => node.status === 'running');
+  const searchResults = Object.entries(routeMeta).filter(([, meta]) => meta.label.includes(searchQuery) || meta.title.includes(searchQuery));
 
   const navigateTo = (path: string) => {
     navigate(path);
@@ -91,14 +94,62 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
           <div className="topbar-tools" aria-label="全局工具">
             <label className="topbar-search">
               <span className="sr-only">全局搜索</span>
-              <input type="search" placeholder="搜索任务、数据集、报告" />
+              <input
+                type="search"
+                placeholder="搜索任务、数据集、报告"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+              {searchQuery ? (
+                <div className="topbar-popover">
+                  {searchResults.length > 0 ? (
+                    searchResults.map(([path, meta]) => (
+                      <button key={path} type="button" onClick={() => navigateTo(path)}>
+                        {meta.label}
+                      </button>
+                    ))
+                  ) : (
+                    <span>没有匹配结果</span>
+                  )}
+                </div>
+              ) : null}
             </label>
-            <button className="tool-button" type="button" aria-label="消息通知">
+            <button
+              className="tool-button"
+              type="button"
+              aria-label="消息通知"
+              onClick={() => setActiveTool((current) => (current === 'notifications' ? null : 'notifications'))}
+            >
               通知
             </button>
-            <button className="tool-button" type="button" aria-label="帮助中心">
+            <button
+              className="tool-button"
+              type="button"
+              aria-label="帮助中心"
+              onClick={() => setActiveTool((current) => (current === 'help' ? null : 'help'))}
+            >
               帮助
             </button>
+            {activeTool ? (
+              <div className="topbar-popover topbar-tool-popover">
+                {activeTool === 'notifications' ? (
+                  <>
+                    <strong>消息通知</strong>
+                    <span>{runningNode ? `${runningNode.label} 正在执行` : '暂无新的任务告警'}</span>
+                  </>
+                ) : (
+                  <>
+                    <strong>帮助中心</strong>
+                    <button type="button" onClick={() => navigateTo('/workspace')}>
+                      查看主流程
+                    </button>
+                    <button type="button" onClick={() => navigateTo('/workflow-designer')}>
+                      查看工作流画布
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : null}
           </div>
           <div className="topbar-task-meta">
             <strong>{activeTask.name}</strong>

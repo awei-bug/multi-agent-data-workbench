@@ -1,6 +1,15 @@
+import { useState } from 'react';
+
 const agents = ['调度 Agent', '数据清洗 Agent', '统计分析 Agent', '可视化 Agent', '报告撰写 Agent', '审核校验 Agent'];
 
 function WorkflowDesignerPage() {
+  const [canvasAgents, setCanvasAgents] = useState(agents.slice(0, 4));
+  const [selectedAgent, setSelectedAgent] = useState(canvasAgents[0]);
+  const addAgent = (agent: string) => {
+    setCanvasAgents((current) => (current.includes(agent) ? current : [...current, agent]));
+    setSelectedAgent(agent);
+  };
+
   return (
     <div className="workflow-designer">
       <section className="content-card workspace-section node-library">
@@ -13,7 +22,14 @@ function WorkflowDesignerPage() {
         </div>
         <div className="workflow-list">
           {agents.map((agent) => (
-            <button className="sidebar-link workflow-palette-item" type="button" key={agent}>
+            <button
+              className="sidebar-link workflow-palette-item"
+              draggable
+              type="button"
+              key={agent}
+              onClick={() => addAgent(agent)}
+              onDragStart={(event) => event.dataTransfer.setData('text/plain', agent)}
+            >
               {agent}
             </button>
           ))}
@@ -28,9 +44,20 @@ function WorkflowDesignerPage() {
             <p>以流程图方式查看 Agent 执行顺序、依赖关系和当前进度。</p>
           </div>
         </div>
-        <div className="workflow-board">
-          {agents.map((agent, index) => (
-            <article className={`workflow-node workflow-node-${index === 0 ? 'running' : index < 3 ? 'success' : 'pending'}`} key={agent}>
+        <div
+          className="workflow-board"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            addAgent(event.dataTransfer.getData('text/plain'));
+          }}
+        >
+          {canvasAgents.map((agent, index) => (
+            <article
+              className={`workflow-node workflow-node-${index === 0 ? 'running' : index < 3 ? 'success' : 'pending'}`}
+              key={agent}
+              onClick={() => setSelectedAgent(agent)}
+            >
               <div>
                 <strong>{`${String(index + 1).padStart(2, '0')} ${agent}`}</strong>
                 <p className="status-note">{index === 0 ? '正在调度' : index < 3 ? '已完成' : '待执行'}</p>
@@ -52,7 +79,7 @@ function WorkflowDesignerPage() {
           </div>
         </div>
         <label className="field-label" htmlFor="node-goal">
-          输出要求
+          {selectedAgent} 输出要求
         </label>
         <textarea id="node-goal" className="text-input text-area" defaultValue="输出清洗规则、异常字段说明和后续指标计算输入。" />
         <div className="actions-row">

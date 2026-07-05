@@ -213,6 +213,39 @@ select:focus-visible,
   background: #fff;
 }
 
+.topbar-search {
+  position: relative;
+}
+
+.topbar-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  min-width: 240px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.topbar-popover button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(33, 87, 213, 0.08);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.topbar-tool-popover {
+  top: 64px;
+}
+
 .tool-button {
   border: 1px solid var(--line);
   border-radius: 999px;

@@ -5,12 +5,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useWorkbenchShell } from '../../context/WorkbenchShellContext';
 import ContextPanel from './ContextPanel';
 
-const routeMeta: Record<string, { label: string; crumb: string; title: string }> = {
-  '/workspace': { label: '新建分析任务', crumb: '新建任务', title: '多 Agent 主流程' },
-  '/data-sources': { label: '数据源管理', crumb: '数据接入', title: '数据源管理' },
-  '/templates': { label: '模板库', crumb: '模板复用', title: '模板库' },
-  '/workspace-async': { label: '异步工作台沙箱', crumb: '异步沙箱', title: '异步工作台沙箱' },
-  '/history': { label: '历史任务', crumb: '历史回放', title: '历史任务' },
+const routeMeta: Record<string, { icon: string; label: string; crumb: string; title: string }> = {
+  '/workspace': { icon: '01', label: '智能体工作台', crumb: '新建任务', title: '多 Agent 主流程' },
+  '/data-sources': { icon: '02', label: '数据集管理', crumb: '数据接入', title: '数据源管理' },
+  '/templates': { icon: '03', label: '模板库', crumb: '模板复用', title: '模板库' },
+  '/workspace-async': { icon: '04', label: '工作流沙箱', crumb: '异步沙箱', title: '异步工作台沙箱' },
+  '/history': { icon: '05', label: '历史会话', crumb: '历史回放', title: '历史任务' },
 };
 
 type AppShellProps = {
@@ -27,6 +27,8 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const activePath = routePath ?? location.pathname;
   const currentRoute = routeMeta[activePath] ?? routeMeta['/workspace'];
+  const finishedNodes = activeTask.snapshot.nodes.filter((node) => node.status === 'success').length;
+  const runningNode = activeTask.snapshot.nodes.find((node) => node.status === 'running');
 
   const navigateTo = (path: string) => {
     navigate(path);
@@ -46,7 +48,10 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   return (
     <div className={`app-shell${contextCollapsed ? ' app-shell-context-collapsed' : ''}`}>
       <aside className="sidebar">
-        <h1 className="app-title">多 Agent 数据分析工作台</h1>
+        <div className="brand-block">
+          <span className="brand-mark">MA</span>
+          <h1 className="app-title">多 Agent 数据分析工作台</h1>
+        </div>
         <div className="sidebar-intro">
           <span className="context-label">工作流状态</span>
           <strong>{activeTask.status}</strong>
@@ -61,7 +66,10 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
               aria-current={activePath === path ? 'page' : undefined}
               onClick={() => navigateTo(path)}
             >
-              {meta.label}
+              <span className="sidebar-link-icon" aria-hidden="true">
+                {meta.icon}
+              </span>
+              <span>{meta.label}</span>
             </button>
           ))}
         </nav>
@@ -75,11 +83,41 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
             </div>
             <h2 className="panel-title">{currentRoute.title}</h2>
           </div>
+          <div className="topbar-tools" aria-label="全局工具">
+            <label className="topbar-search">
+              <span className="sr-only">全局搜索</span>
+              <input type="search" placeholder="搜索任务、数据集、报告" />
+            </label>
+            <button className="tool-button" type="button" aria-label="消息通知">
+              通知
+            </button>
+            <button className="tool-button" type="button" aria-label="帮助中心">
+              帮助
+            </button>
+          </div>
           <div className="topbar-task-meta">
             <strong>{activeTask.name}</strong>
             <span>{activeTask.status}</span>
           </div>
         </header>
+        <section className="dashboard-strip" aria-label="平台运行概览">
+          <div className="metric-card metric-card-blue">
+            <span>在线 Agent</span>
+            <strong>{activeTask.snapshot.nodes.length}</strong>
+          </div>
+          <div className="metric-card metric-card-green">
+            <span>已完成节点</span>
+            <strong>{finishedNodes}</strong>
+          </div>
+          <div className="metric-card metric-card-amber">
+            <span>当前节点</span>
+            <strong>{runningNode?.label ?? '等待启动'}</strong>
+          </div>
+          <div className="metric-card metric-card-red">
+            <span>风险提示</span>
+            <strong>{activeTask.risks.length}</strong>
+          </div>
+        </section>
         <div className="quick-actions-bar" aria-label="快捷操作">
           <button
             className="action-button action-button-primary"

@@ -37,6 +37,8 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const activePath = routePath ?? location.pathname;
   const currentRoute = routeMeta[activePath] ?? routeMeta['/workspace'];
+  const showsContextPanel = activePath === '/workspace' || activePath === '/workspace-async';
+  const showsWorkspaceActions = activePath === '/workspace';
   const finishedNodes = activeTask.snapshot.nodes.filter((node) => node.status === 'success').length;
   const runningNode = activeTask.snapshot.nodes.find((node) => node.status === 'running');
   const searchResults = Object.entries(routeMeta).filter(([, meta]) => meta.label.includes(searchQuery) || meta.title.includes(searchQuery));
@@ -90,8 +92,16 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
     window.dispatchEvent(new CustomEvent(`workspace:${action}`));
   };
 
+  const shellClassName = [
+    'app-shell',
+    showsContextPanel ? 'app-shell-with-context' : 'app-shell-no-context',
+    showsContextPanel && contextCollapsed ? 'app-shell-context-collapsed' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className={`app-shell${contextCollapsed ? ' app-shell-context-collapsed' : ''}`}>
+    <div className={shellClassName}>
       <aside className="sidebar">
         <div className="brand-block">
           <span className="brand-mark">MA</span>
@@ -203,71 +213,77 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
             <span>{activeTask.status}</span>
           </div>
         </header>
-        <section className="dashboard-strip" aria-label="平台运行概览">
-          <div className="metric-card metric-card-blue">
-            <span>在线 Agent</span>
-            <strong>{activeTask.snapshot.nodes.length}</strong>
+        {showsContextPanel ? (
+          <section className="dashboard-strip" aria-label="平台运行概览">
+            <div className="metric-card metric-card-blue">
+              <span>在线 Agent</span>
+              <strong>{activeTask.snapshot.nodes.length}</strong>
+            </div>
+            <div className="metric-card metric-card-green">
+              <span>已完成节点</span>
+              <strong>{finishedNodes}</strong>
+            </div>
+            <div className="metric-card metric-card-amber">
+              <span>当前节点</span>
+              <strong>{runningNode?.label ?? '等待启动'}</strong>
+            </div>
+            <div className="metric-card metric-card-red">
+              <span>风险提示</span>
+              <strong>{activeTask.risks.length}</strong>
+            </div>
+          </section>
+        ) : null}
+        {showsWorkspaceActions ? (
+          <div className="quick-actions-bar" aria-label="快捷操作">
+            <button
+              className="action-button action-button-primary"
+              type="button"
+              aria-label="加载示例数据"
+              onClick={() => emitWorkspaceAction('load-sample')}
+            >
+              加载示例数据
+              <span className="shortcut-hint">Alt+S</span>
+            </button>
+            <button
+              className="action-button secondary-button"
+              type="button"
+              aria-label="启动任务"
+              onClick={() => emitWorkspaceAction('start')}
+            >
+              启动任务
+              <span className="shortcut-hint">Alt+R</span>
+            </button>
+            <button
+              className="action-button secondary-button"
+              type="button"
+              aria-label="导出结果"
+              onClick={() => emitWorkspaceAction('focus-export')}
+            >
+              导出结果
+              <span className="shortcut-hint">Alt+E</span>
+            </button>
+            <button
+              className="panel-toggle-button"
+              type="button"
+              aria-expanded={!contextCollapsed}
+              aria-controls="context-panel"
+              onClick={() => setContextCollapsed((current) => !current)}
+            >
+              {contextCollapsed ? '展开上下文面板' : '收起上下文面板'}
+            </button>
           </div>
-          <div className="metric-card metric-card-green">
-            <span>已完成节点</span>
-            <strong>{finishedNodes}</strong>
-          </div>
-          <div className="metric-card metric-card-amber">
-            <span>当前节点</span>
-            <strong>{runningNode?.label ?? '等待启动'}</strong>
-          </div>
-          <div className="metric-card metric-card-red">
-            <span>风险提示</span>
-            <strong>{activeTask.risks.length}</strong>
-          </div>
-        </section>
-        <div className="quick-actions-bar" aria-label="快捷操作">
-          <button
-            className="action-button action-button-primary"
-            type="button"
-            aria-label="加载示例数据"
-            onClick={() => emitWorkspaceAction('load-sample')}
-          >
-            加载示例数据
-            <span className="shortcut-hint">Alt+S</span>
-          </button>
-          <button
-            className="action-button secondary-button"
-            type="button"
-            aria-label="启动任务"
-            onClick={() => emitWorkspaceAction('start')}
-          >
-            启动任务
-            <span className="shortcut-hint">Alt+R</span>
-          </button>
-          <button
-            className="action-button secondary-button"
-            type="button"
-            aria-label="导出结果"
-            onClick={() => emitWorkspaceAction('focus-export')}
-          >
-            导出结果
-            <span className="shortcut-hint">Alt+E</span>
-          </button>
-          <button
-            className="panel-toggle-button"
-            type="button"
-            aria-expanded={!contextCollapsed}
-            aria-controls="context-panel"
-            onClick={() => setContextCollapsed((current) => !current)}
-          >
-            {contextCollapsed ? '展开上下文面板' : '收起上下文面板'}
-          </button>
-        </div>
+        ) : null}
         <div key={activePath}>{children}</div>
       </main>
-      <ContextPanel
-        collapsed={contextCollapsed}
-        context={context}
-        activeTask={activeTask}
-        focusedNodeId={focusedNodeId}
-        onToggle={() => setContextCollapsed((current) => !current)}
-      />
+      {showsContextPanel ? (
+        <ContextPanel
+          collapsed={contextCollapsed}
+          context={context}
+          activeTask={activeTask}
+          focusedNodeId={focusedNodeId}
+          onToggle={() => setContextCollapsed((current) => !current)}
+        />
+      ) : null}
     </div>
   );
 }

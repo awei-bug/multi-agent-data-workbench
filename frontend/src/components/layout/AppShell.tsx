@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useWorkbenchShell } from '../../context/WorkbenchShellContext';
@@ -32,11 +32,48 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTool, setActiveTool] = useState<'notifications' | 'help' | null>(null);
+  const [apiSearchResults, setApiSearchResults] = useState<Array<{ kind: string; id: string; name: string }>>([]);
+  const [notifications, setNotifications] = useState<Array<{ id: string; level: string; message: string }>>([]);
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const activePath = routePath ?? location.pathname;
   const currentRoute = routeMeta[activePath] ?? routeMeta['/workspace'];
   const finishedNodes = activeTask.snapshot.nodes.filter((node) => node.status === 'success').length;
   const runningNode = activeTask.snapshot.nodes.find((node) => node.status === 'running');
   const searchResults = Object.entries(routeMeta).filter(([, meta]) => meta.label.includes(searchQuery) || meta.title.includes(searchQuery));
+  const goToSearchResult = (kind: string) => {
+    if (kind === 'dataset') navigateTo('/data-sources');
+    else if (kind === 'template') navigateTo('/templates');
+    else navigateTo('/history');
+  };
+
+  useEffect(() => {
+    if (!apiBaseUrl || !searchQuery.trim()) {
+      setApiSearchResults([]);
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(`${apiBaseUrl}/api/search?query=${encodeURIComponent(searchQuery)}`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : []))
+      .then((results) => setApiSearchResults(results))
+      .catch(() => setApiSearchResults([]));
+    return () => controller.abort();
+  }, [apiBaseUrl, searchQuery]);
+
+  useEffect(() => {
+    if (!apiBaseUrl || activeTool !== 'notifications') return;
+    let cancelled = false;
+    void fetch(`${apiBaseUrl}/api/notifications`)
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) => {
+        if (!cancelled) setNotifications(items);
+      })
+      .catch(() => {
+        if (!cancelled) setNotifications([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTool, apiBaseUrl]);
 
   const navigateTo = (path: string) => {
     navigate(path);
@@ -102,7 +139,13 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
               />
               {searchQuery ? (
                 <div className="topbar-popover">
-                  {searchResults.length > 0 ? (
+                  {apiSearchResults.length > 0 ? (
+                    apiSearchResults.map((item) => (
+                      <button key={`${item.kind}-${item.id}`} type="button" onClick={() => goToSearchResult(item.kind)}>
+                        {item.name}
+                      </button>
+                    ))
+                  ) : searchResults.length > 0 ? (
                     searchResults.map(([path, meta]) => (
                       <button key={path} type="button" onClick={() => navigateTo(path)}>
                         {meta.label}
@@ -135,7 +178,11 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
                 {activeTool === 'notifications' ? (
                   <>
                     <strong>消息通知</strong>
-                    <span>{runningNode ? `${runningNode.label} 正在执行` : '暂无新的任务告警'}</span>
+                    {(notifications.length > 0 ? notifications : [{ id: 'local', message: runningNode ? `${runningNode.label} 正在执行` : '暂无新的任务告警', level: 'info' }]).map(
+                      (item) => (
+                        <span key={item.id}>{item.message}</span>
+                      ),
+                    )}
                   </>
                 ) : (
                   <>

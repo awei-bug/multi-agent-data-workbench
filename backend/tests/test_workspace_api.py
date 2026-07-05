@@ -170,6 +170,21 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertGreaterEqual(len(payload), 2)
         self.assertEqual(payload[0]["source"], "system")
 
+    def test_frontend_support_endpoints_return_workspace_data(self) -> None:
+        datasets = self.client.get("/api/datasets")
+        reports = self.client.get("/api/reports")
+        notifications = self.client.get("/api/notifications")
+        search = self.client.get("/api/search", params={"query": "销售"})
+
+        self.assertEqual(datasets.status_code, 200)
+        self.assertEqual(reports.status_code, 200)
+        self.assertEqual(notifications.status_code, 200)
+        self.assertEqual(search.status_code, 200)
+        self.assertGreaterEqual(len(datasets.json()), 1)
+        self.assertGreaterEqual(len(reports.json()), 1)
+        self.assertGreaterEqual(len(notifications.json()), 1)
+        self.assertIsInstance(search.json(), list)
+
     def test_workflow_start_updates_active_task_snapshot(self) -> None:
         response = self.client.post("/api/workflow/action", json={"action": "start"})
 

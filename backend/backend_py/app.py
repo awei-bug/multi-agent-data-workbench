@@ -234,6 +234,22 @@ def create_app(
     def list_templates() -> list[dict]:
         return repo.list_templates()
 
+    @app.get("/api/datasets")
+    def list_datasets() -> list[dict]:
+        return repo.list_datasets()
+
+    @app.get("/api/reports")
+    def list_reports() -> list[dict]:
+        return repo.list_reports()
+
+    @app.get("/api/search")
+    def search(query: str = "") -> list[dict]:
+        return repo.search(query)
+
+    @app.get("/api/notifications")
+    def list_notifications() -> list[dict]:
+        return repo.list_notifications()
+
     @app.post("/api/templates/save-active-task")
     def save_active_task_as_template(payload: TemplateDraftRequest) -> dict:
         template = repo.save_active_task_as_template(payload.model_dump(exclude_none=True))

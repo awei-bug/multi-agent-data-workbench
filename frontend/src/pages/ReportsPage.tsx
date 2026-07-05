@@ -1,12 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { createMockTaskRepository } from '../mock/mockTaskRepository';
 
 const repository = createMockTaskRepository();
 
+type ReportRecord = ReturnType<typeof repository.listRecentTasks>[number];
+
 function ReportsPage() {
-  const reports = repository.listRecentTasks();
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
+  const [reports, setReports] = useState<ReportRecord[]>(() => repository.listRecentTasks());
   const [status, setStatus] = useState('等待选择报告操作');
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    let cancelled = false;
+    void fetch(`${apiBaseUrl}/api/reports`)
+      .then((response) => (response.ok ? response.json() : repository.listRecentTasks()))
+      .then((nextReports: ReportRecord[]) => {
+        if (!cancelled) setReports(nextReports);
+      })
+      .catch(() => {
+        if (!cancelled) setReports(repository.listRecentTasks());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl]);
 
   return (
     <div className="workspace-grid">

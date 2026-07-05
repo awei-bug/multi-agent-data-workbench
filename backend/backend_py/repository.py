@@ -385,6 +385,71 @@ class TaskRepository:
         system_templates = [item for item in templates if item.get("source") != "workspace"]
         return deepcopy(workspace_templates + system_templates)
 
+    def list_datasets(self) -> list[dict]:
+        datasets = []
+        for task in [self.get_active_task(), *self.list_recent_tasks()]:
+            data_source = task.get("dataSource")
+            if data_source:
+                datasets.append(
+                    {
+                        "id": task["id"],
+                        "name": data_source.get("fileName", task["name"]),
+                        "kind": data_source.get("kind", "csv"),
+                        "columnCount": data_source.get("columnCount", 0),
+                        "rowCount": data_source.get("rowCount", 0),
+                        "usedBy": task["name"],
+                    }
+                )
+        if datasets:
+            return deepcopy(datasets)
+        return [
+            {
+                "id": "sample-sales-dataset",
+                "name": "示例销售数据集",
+                "kind": "csv",
+                "columnCount": 3,
+                "rowCount": 12,
+                "usedBy": "多 Agent 主流程演示",
+            }
+        ]
+
+    def list_reports(self) -> list[dict]:
+        reports = []
+        for task in self.list_recent_tasks():
+            reports.append(
+                {
+                    "id": task["id"],
+                    "name": task["name"],
+                    "summary": task["summary"],
+                    "time": task["time"],
+                    "exports": task.get("exports", []),
+                    "status": task["status"],
+                }
+            )
+        return deepcopy(reports)
+
+    def search(self, query: str) -> list[dict]:
+        normalized = query.strip().lower()
+        if not normalized:
+            return []
+        results = []
+        for kind, items in (("task", self.list_recent_tasks()), ("template", self.list_templates()), ("dataset", self.list_datasets())):
+            for item in items:
+                haystack = " ".join(str(item.get(key, "")) for key in ("name", "summary", "description", "request", "usedBy")).lower()
+                if normalized in haystack:
+                    results.append({"kind": kind, "id": item["id"], "name": item["name"]})
+        return results[:10]
+
+    def list_notifications(self) -> list[dict]:
+        active_task = self.get_active_task()
+        running = next((node for node in active_task["snapshot"]["nodes"] if node["status"] == "running"), None)
+        notifications = []
+        if running:
+            notifications.append({"id": "running-agent", "level": "info", "message": f"{running['label']} 正在执行"})
+        for index, risk in enumerate(active_task.get("risks", []), start=1):
+            notifications.append({"id": f"risk-{index}", "level": "warn", "message": risk})
+        return notifications or [{"id": "idle", "level": "info", "message": "暂无新的任务告警"}]
+
     def save_active_task_as_template(self, draft: dict | None = None) -> dict:
         active_task = self.get_active_task()
         request = draft.get("request", active_task["request"]) if draft else active_task["request"]

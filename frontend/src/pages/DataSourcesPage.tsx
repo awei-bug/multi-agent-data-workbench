@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useWorkbenchShell } from '../context/WorkbenchShellContext';
@@ -5,6 +6,15 @@ import { createMockTaskRepository } from '../mock/mockTaskRepository';
 import { buildSampleDataContext } from './workspaceSampleData';
 
 const repository = createMockTaskRepository();
+
+type ApiDataset = {
+  id: string;
+  name: string;
+  kind: string;
+  columnCount: number;
+  rowCount: number;
+  usedBy: string;
+};
 
 const sampleDatasets = [
   {
@@ -24,6 +34,24 @@ const sampleDatasets = [
 function DataSourcesPage() {
   const navigate = useNavigate();
   const { setActiveTask, setContext } = useWorkbenchShell();
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
+  const [apiDatasets, setApiDatasets] = useState<ApiDataset[]>([]);
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    let cancelled = false;
+    void fetch(`${apiBaseUrl}/api/datasets`)
+      .then((response) => (response.ok ? response.json() : []))
+      .then((datasets: ApiDataset[]) => {
+        if (!cancelled) setApiDatasets(datasets);
+      })
+      .catch(() => {
+        if (!cancelled) setApiDatasets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl]);
 
   const handleUseDataset = (dataset: (typeof sampleDatasets)[number]) => {
     const baseTask = repository.getActiveTask();
@@ -63,6 +91,15 @@ function DataSourcesPage() {
           </div>
         </div>
         <div className="history-list history-list-grid">
+          {apiDatasets.map((dataset) => (
+            <article className="history-card" key={dataset.id}>
+              <div className="history-card-header">
+                <h4>{dataset.name}</h4>
+                <span className="history-badge history-badge-secondary">{dataset.kind}</span>
+              </div>
+              <p>{`${dataset.columnCount} 个字段 / ${dataset.rowCount} 行 / 使用于 ${dataset.usedBy}`}</p>
+            </article>
+          ))}
           {sampleDatasets.map((dataset) => (
             <article className="history-card" key={dataset.name}>
               <div className="history-card-header">

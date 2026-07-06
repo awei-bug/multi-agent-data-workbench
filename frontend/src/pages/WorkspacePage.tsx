@@ -30,6 +30,7 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
   const [inputPane, setInputPane] = useState<InputPane>('data');
   const [executionPane, setExecutionPane] = useState<ExecutionPane>('monitor');
   const [outputPane, setOutputPane] = useState<OutputPane>('report');
+  const [sandboxMode, setSandboxMode] = useState(false);
   const {
     activeTask,
     composerValue,
@@ -65,6 +66,7 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const templates = repository.listTemplates();
   const recentTasks = repository.listRecentTasks();
+  const progress = activePhase === 'input' ? 33 : activePhase === 'execution' ? 66 : 100;
 
   const handleParseWithApi = async (payload: Parameters<typeof handleParse>[0]) => {
     if (!apiBaseUrl || !payload) {
@@ -143,6 +145,13 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
         <button className={activePhase === 'output' ? 'active' : ''} type="button" onClick={() => setActivePhase('output')}>
           03 报告交付
         </button>
+      </div>
+      <div className="workspace-inline-toolbar">
+        <span className="status-chip status-chip-running">{`进度 ${progress}%`}</span>
+        <button className="action-button secondary-button" type="button" onClick={() => setSandboxMode((current) => !current)}>
+          异步调试沙箱
+        </button>
+        {sandboxMode ? <span className="status-note">沙箱模式已开启，共用当前数据源和需求输入。</span> : null}
       </div>
 
       {activePhase === 'input' ? (

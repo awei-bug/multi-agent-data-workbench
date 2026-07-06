@@ -26,7 +26,7 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   const { context, activeTask } = useWorkbenchShell();
   const location = useLocation();
   const navigate = useNavigate();
-  const [contextCollapsed, setContextCollapsed] = useState(false);
+  const [contextCollapsed, setContextCollapsed] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTool, setActiveTool] = useState<'notifications' | 'help' | null>(null);
   const [apiSearchResults, setApiSearchResults] = useState<Array<{ kind: string; id: string; name: string }>>([]);
@@ -136,6 +136,14 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
             <h2 className="panel-title">{currentRoute.title}</h2>
           </div>
           <div className="topbar-tools" aria-label="全局工具">
+            <label className="topbar-context-select">
+              <span className="sr-only">全局任务上下文</span>
+              <select aria-label="全局任务上下文" defaultValue={activeTask.id}>
+                <option value={activeTask.id}>{activeTask.name}</option>
+                <option value="east-china-sales-report">华东销售月报</option>
+                <option value="channel-roi-review">渠道投放复盘</option>
+              </select>
+            </label>
             <label className="topbar-search">
               <span className="sr-only">全局搜索</span>
               <input

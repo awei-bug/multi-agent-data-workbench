@@ -36,6 +36,7 @@ function DataSourcesPage() {
   const { setActiveTask, setContext } = useWorkbenchShell();
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const [apiDatasets, setApiDatasets] = useState<ApiDataset[]>([]);
+  const [activeTab, setActiveTab] = useState<'file' | 'database' | 'recent'>('file');
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -81,17 +82,21 @@ function DataSourcesPage() {
           </div>
         </div>
         <div className="summary-grid summary-grid-strong">
-          <div className="summary-card">
+          <button className={activeTab === 'file' ? 'summary-card active-tab-card' : 'summary-card'} role="tab" aria-label="本地文件" type="button" onClick={() => setActiveTab('file')}>
             <span>本地文件</span>
             <strong>支持 CSV / Excel 样例接入</strong>
-          </div>
-          <div className="summary-card">
-            <span>数据直连</span>
-            <strong>预留 MySQL / PostgreSQL / ClickHouse</strong>
-          </div>
+          </button>
+          <button className={activeTab === 'database' ? 'summary-card active-tab-card' : 'summary-card'} role="tab" aria-label="数据库直连" type="button" onClick={() => setActiveTab('database')}>
+            <span>数据库直连</span>
+            <strong>PostgreSQL / MySQL</strong>
+          </button>
+          <button className={activeTab === 'recent' ? 'summary-card active-tab-card' : 'summary-card'} role="tab" aria-label="近期复用" type="button" onClick={() => setActiveTab('recent')}>
+            <span>近期复用</span>
+            <strong>复用历史字段结构</strong>
+          </button>
         </div>
         <div className="history-list history-list-grid">
-          {apiDatasets.map((dataset) => (
+          {(activeTab !== 'file' ? apiDatasets : []).map((dataset) => (
             <article className="history-card" key={dataset.id}>
               <div className="history-card-header">
                 <h4>{dataset.name}</h4>
@@ -109,13 +114,13 @@ function DataSourcesPage() {
               <p>{dataset.description}</p>
               <div className="actions-row">
                 <button className="action-button secondary-button" type="button" onClick={() => handleUseDataset(dataset)}>
-                  {`使用 ${dataset.name}`}
+                  快速新建任务
                 </button>
               </div>
             </article>
           ))}
         </div>
-        <div className="history-detail-block">
+        <div className="history-detail-block dev-only-note" aria-hidden="true">
           <h4>后续迭代方向</h4>
           <ul className="context-risk-list">
             <li>统一接入数据源连接表单与凭据校验。</li>

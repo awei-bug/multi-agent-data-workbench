@@ -9,6 +9,7 @@ function WorkflowDesignerPage() {
   const [canvasAgents, setCanvasAgents] = useState(agents.slice(0, 4));
   const [selectedAgent, setSelectedAgent] = useState(canvasAgents[0]);
   const [status, setStatus] = useState('等待选择或保存流程模板');
+  const [libraryCollapsed, setLibraryCollapsed] = useState(false);
   const templates = repository.listTemplates();
   const addAgent = (agent: string) => {
     setCanvasAgents((current) => (current.includes(agent) ? current : [...current, agent]));
@@ -17,7 +18,7 @@ function WorkflowDesignerPage() {
 
   return (
     <div className="workflow-designer">
-      <section className="content-card workspace-section node-library">
+      <section className={`content-card workspace-section node-library${libraryCollapsed ? ' collapsed' : ''}`}>
         <div className="section-heading">
           <span className="section-index">NL</span>
           <div>
@@ -25,20 +26,25 @@ function WorkflowDesignerPage() {
             <p>选择 Agent 节点、判断分支和导出节点。</p>
           </div>
         </div>
-        <div className="workflow-list">
-          {agents.map((agent) => (
-            <button
-              className="sidebar-link workflow-palette-item"
-              draggable
-              type="button"
-              key={agent}
-              onClick={() => addAgent(agent)}
-              onDragStart={(event) => event.dataTransfer.setData('text/plain', agent)}
-            >
-              {agent}
-            </button>
-          ))}
-        </div>
+        <button className="action-button secondary-button" type="button" onClick={() => setLibraryCollapsed((current) => !current)}>
+          {libraryCollapsed ? '展开组件库' : '收起组件库'}
+        </button>
+        {libraryCollapsed ? null : (
+          <div className="workflow-list">
+            {agents.map((agent) => (
+              <button
+                className="sidebar-link workflow-palette-item"
+                draggable
+                type="button"
+                key={agent}
+                onClick={() => addAgent(agent)}
+                onDragStart={(event) => event.dataTransfer.setData('text/plain', agent)}
+              >
+                {agent}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="content-card workspace-section workflow-canvas-panel">
@@ -86,6 +92,11 @@ function WorkflowDesignerPage() {
               className={`workflow-node workflow-node-${index === 0 ? 'running' : index < 3 ? 'success' : 'pending'}`}
               key={agent}
               onClick={() => setSelectedAgent(agent)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setSelectedAgent(agent);
+                setStatus(`右键菜单：复制 / 配置 / 跳转对话分析 - ${agent}`);
+              }}
             >
               <div>
                 <strong>{`${String(index + 1).padStart(2, '0')} ${agent}`}</strong>
@@ -111,6 +122,10 @@ function WorkflowDesignerPage() {
           {selectedAgent} 输出要求
         </label>
         <textarea id="node-goal" className="text-input text-area" defaultValue="输出清洗规则、异常字段说明和后续指标计算输入。" />
+        <details className="history-detail-block">
+          <summary>高级配置</summary>
+          <p>低频参数：重试次数、超时时间、失败回滚策略。</p>
+        </details>
         <div className="actions-row">
           <button className="action-button" type="button" onClick={() => setStatus(`已保存模板：${selectedAgent} 流程`)}>
             保存流程模板

@@ -12,6 +12,7 @@ function ReportsPage() {
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const [reports, setReports] = useState<ReportRecord[]>(() => repository.listRecentTasks());
   const [status, setStatus] = useState('等待选择报告操作');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -35,6 +36,9 @@ function ReportsPage() {
     navigate('/workspace');
   };
 
+  const filteredReports =
+    statusFilter === 'all' ? reports : reports.filter((report) => (statusFilter === 'review' ? report.status.includes('复核') : report.status.includes('导出')));
+
   return (
     <div className="workspace-grid">
       <section className="content-card workspace-section">
@@ -49,8 +53,22 @@ function ReportsPage() {
           <strong>操作反馈</strong>
           <p>{status}</p>
         </div>
+        <div className="actions-row report-filter-bar">
+          <label className="composer-field" htmlFor="report-status-filter">
+            <span>状态筛选</span>
+            <select id="report-status-filter" className="text-input" aria-label="报告状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="all">全部报告</option>
+              <option value="review">待复核</option>
+              <option value="exported">已导出</option>
+            </select>
+          </label>
+          <label className="composer-field" htmlFor="report-time-filter">
+            <span>时间筛选</span>
+            <input id="report-time-filter" className="text-input" type="date" aria-label="报告时间筛选" />
+          </label>
+        </div>
         <div className="history-list history-list-grid">
-          {reports.map((report) => (
+          {filteredReports.map((report) => (
             <article className="history-card report-card" key={report.id}>
               <div className="history-card-header">
                 <h4>{report.name}</h4>
@@ -65,7 +83,15 @@ function ReportsPage() {
                 <button className="action-button secondary-button" type="button" onClick={() => setStatus(`PDF 下载已生成：${report.name}`)}>
                   下载 PDF
                 </button>
-                <button className="action-button secondary-button" type="button" onClick={() => setStatus(`已基于 ${report.name} 重新发起分析`)}>
+                <button
+                  className="action-button secondary-button"
+                  type="button"
+                  onClick={() => {
+                    repository.loadTaskIntoWorkspace(report.id);
+                    setStatus(`已基于 ${report.name} 重新发起分析`);
+                    navigate('/workspace');
+                  }}
+                >
                   重新分析
                 </button>
                 <button className="action-button secondary-button" type="button" onClick={() => replayReport(report)}>

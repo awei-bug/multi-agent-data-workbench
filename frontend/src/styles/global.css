@@ -217,12 +217,18 @@ select:focus-visible,
   flex-shrink: 0;
 }
 
-.topbar-search input {
+.topbar-search input,
+.topbar-context-select select {
   width: min(24vw, 300px);
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 9px 14px;
   background: #fff;
+}
+
+.topbar-context-select select {
+  width: min(22vw, 260px);
+  color: var(--text);
 }
 
 .topbar-search {
@@ -407,6 +413,14 @@ select:focus-visible,
   color: #fff;
 }
 
+.workspace-inline-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .workspace-subtabs {
   grid-column: 1 / -1;
   display: flex;
@@ -576,6 +590,15 @@ select:focus-visible,
 
 .summary-grid-strong .summary-card {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(237, 244, 248, 0.94));
+}
+
+button.summary-card {
+  text-align: left;
+  cursor: pointer;
+}
+
+.active-tab-card {
+  box-shadow: inset 0 0 0 2px rgba(33, 87, 213, 0.28);
 }
 
 .preview-card,
@@ -979,6 +1002,15 @@ select:focus-visible,
   align-items: center;
 }
 
+.context-panel-collapsed .context-panel-body {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .context-block {
   display: grid;
   gap: 6px;
@@ -1076,8 +1108,14 @@ select:focus-visible,
   font-weight: 800;
 }
 
+.plain-chart-button {
+  width: 100%;
+  border: 0;
+  cursor: pointer;
+}
+
 .chat-main {
-  grid-row: span 2;
+  grid-column: 1 / -1;
 }
 
 .chat-stream {
@@ -1110,6 +1148,15 @@ select:focus-visible,
   margin-top: var(--space-2);
 }
 
+.chat-preview-drawer {
+  grid-column: 1 / -1;
+  display: none;
+}
+
+.chat-preview-drawer.open {
+  display: block;
+}
+
 .workflow-designer {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 280px;
@@ -1123,6 +1170,14 @@ select:focus-visible,
 .workflow-palette-item {
   color: var(--text);
   background: #fff;
+}
+
+.node-library.collapsed {
+  align-self: start;
+}
+
+.workflow-template-bar .text-input {
+  max-width: 260px;
 }
 
 .workflow-board {
@@ -1153,6 +1208,14 @@ select:focus-visible,
   background-position: 18px 24px, 18px 52px, 18px 80px, 18px 108px, 0 0;
   background-size: calc(100% - 36px) 12px, calc(100% - 36px) 12px, calc(100% - 36px) 12px, calc(100% - 36px) 8px, 100% 100%;
   background-repeat: no-repeat;
+}
+
+.report-filter-bar .composer-field {
+  min-width: 220px;
+}
+
+.dev-only-note {
+  display: none;
 }
 
 @keyframes workflowShimmer {

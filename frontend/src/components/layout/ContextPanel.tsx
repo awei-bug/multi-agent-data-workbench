@@ -38,8 +38,7 @@ function ContextPanel({ collapsed = false, context, activeTask, focusedNodeId, o
           {collapsed ? '展开上下文面板' : '收起上下文面板'}
         </button>
       </div>
-      {!collapsed ? (
-        <div className="context-panel-body">
+      <div className="context-panel-body">
           <div className="context-block context-block-highlight">
             <span className="context-label">当前焦点</span>
             <strong>{displayNode?.label ?? activeTask.name}</strong>
@@ -106,8 +105,7 @@ function ContextPanel({ collapsed = false, context, activeTask, focusedNodeId, o
               ))}
             </ul>
           </div>
-        </div>
-      ) : null}
+      </div>
     </section>
   );
 }

@@ -1,8 +1,10 @@
 import { createMockTaskRepository } from '../mock/mockTaskRepository';
+import { useNavigate } from 'react-router-dom';
 
 const repository = createMockTaskRepository();
 
 function DashboardPage() {
+  const navigate = useNavigate();
   const activeTask = repository.getActiveTask();
   const recentTasks = repository.listRecentTasks();
   const finishedTasks = recentTasks.filter((task) => task.snapshot.phase === 'completed').length;
@@ -20,15 +22,15 @@ function DashboardPage() {
           </div>
         </div>
         <div className="summary-grid summary-grid-strong">
-          <div className="summary-card">
+          <div className="summary-card" title="当前可调度的清洗、计算、可视化、报告和审核 Agent">
             <span>在线 Agent</span>
             <strong>{activeTask.snapshot.nodes.length}</strong>
           </div>
-          <div className="summary-card">
+          <div className="summary-card" title="今日创建和复用的分析任务总数">
             <span>今日分析任务</span>
             <strong>{recentTasks.length}</strong>
           </div>
-          <div className="summary-card">
+          <div className="summary-card" title="已完成任务 / 今日分析任务">
             <span>任务完成率</span>
             <strong>{`${Math.round((finishedTasks / Math.max(recentTasks.length, 1)) * 100)}%`}</strong>
           </div>
@@ -47,11 +49,11 @@ function DashboardPage() {
             <p>最近任务吞吐趋势，用于判断工作台使用热度。</p>
           </div>
         </div>
-        <div className="mini-chart-bars" aria-label="日任务量趋势图">
+        <button className="plain-chart-button mini-chart-bars" aria-label="日任务量趋势图" type="button" onClick={() => navigate('/workflow-designer')}>
           {[42, 58, 36, 74, 66, 92, 80].map((height, index) => (
             <span key={height + index} style={{ height: `${height}%` }} />
           ))}
-        </div>
+        </button>
       </section>
 
       <section className="content-card workspace-section">
@@ -62,9 +64,9 @@ function DashboardPage() {
             <p>按清洗、计算、可视化、报告和审核环节拆分。</p>
           </div>
         </div>
-        <div className="agent-donut" aria-label="Agent 任务占比图">
+        <button className="plain-chart-button agent-donut" aria-label="Agent 任务占比图" type="button" onClick={() => navigate('/workflow-designer')}>
           <span>{runningAgents > 0 ? '运行中' : '空闲'}</span>
-        </div>
+        </button>
       </section>
 
       <section className="content-card workspace-section">
@@ -83,6 +85,14 @@ function DashboardPage() {
                 <span className="history-badge">{task.status}</span>
               </div>
               <p>{task.summary}</p>
+              <div className="actions-row">
+                <button className="action-button secondary-button" type="button" onClick={() => navigate('/reports')}>
+                  查看报告
+                </button>
+                <button className="action-button tertiary-button" type="button" onClick={() => navigate('/workspace')}>
+                  进入工作台回放
+                </button>
+              </div>
             </article>
           ))}
         </div>
@@ -103,6 +113,11 @@ function DashboardPage() {
               <li key={risk}>{risk}</li>
             ))}
           </ul>
+          <div className="actions-row">
+            <button className="action-button secondary-button" type="button" onClick={() => navigate('/chat-analysis')}>
+              一键处理
+            </button>
+          </div>
         </div>
       </section>
     </div>

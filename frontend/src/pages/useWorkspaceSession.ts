@@ -266,6 +266,19 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     syncTaskSession(runtime.createTaskFromReplay());
   };
 
+  const handleCreateFromTemplate = (template: { name: string; request: string; summary: string }) => {
+    setParsedIntent(null);
+    syncTaskSession(runtime.createTaskFromTemplate(template));
+  };
+
+  const handleLoadHistoryTask = (taskId: string) => {
+    const task = runtime.loadTaskIntoWorkspace(taskId);
+    if (task) {
+      setParsedIntent(buildReplayAction().parsedIntent);
+      syncTaskSession(task);
+    }
+  };
+
   const handleReportSummaryChange = (summary: string) => {
     setReportSummary(summary);
     updateTask({ summary });
@@ -495,12 +508,14 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     intentDefaults,
     handleChartTitleChange,
     handleCreateFromReplay,
+    handleCreateFromTemplate,
     handleExitReplay,
     handleExport,
     handleFail,
     handleConfirmCsvMapping,
     handleImportCsvData,
     handleLoadSampleData,
+    handleLoadHistoryTask,
     handleManualRevision,
     handleParse,
     handlePause,

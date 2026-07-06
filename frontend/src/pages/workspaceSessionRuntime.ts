@@ -19,6 +19,8 @@ type WorkspaceSessionRepository = {
   updateActiveTask: (update: ActiveTaskUpdate) => TaskRecord;
   resetActiveTask: () => TaskRecord;
   createTaskFromReplay: () => TaskRecord;
+  createTaskFromTemplate?: (template: { name: string; request: string; summary: string }) => TaskRecord;
+  loadTaskIntoWorkspace?: (taskId: string) => TaskRecord | null;
   saveActiveTaskToHistory: () => TaskRecord;
   saveActiveTaskAsTemplate: (draft?: { name: string; request: string; summary: string }) => unknown;
   parseIntent?: (request: string) => Promise<{
@@ -62,6 +64,12 @@ export function createWorkspaceSessionRuntime(options: WorkspaceSessionRuntimeOp
     },
     createTaskFromReplay() {
       return repository.createTaskFromReplay();
+    },
+    createTaskFromTemplate(template: { name: string; request: string; summary: string }) {
+      return repository.createTaskFromTemplate?.(template) ?? repository.updateActiveTask(template);
+    },
+    loadTaskIntoWorkspace(taskId: string) {
+      return repository.loadTaskIntoWorkspace?.(taskId) ?? null;
     },
     saveActiveTaskToHistory() {
       return repository.saveActiveTaskToHistory();

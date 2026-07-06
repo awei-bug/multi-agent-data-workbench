@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { createMockTaskRepository } from '../mock/mockTaskRepository';
 
@@ -7,6 +8,7 @@ const repository = createMockTaskRepository();
 type ReportRecord = ReturnType<typeof repository.listRecentTasks>[number];
 
 function ReportsPage() {
+  const navigate = useNavigate();
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const [reports, setReports] = useState<ReportRecord[]>(() => repository.listRecentTasks());
   const [status, setStatus] = useState('等待选择报告操作');
@@ -26,6 +28,12 @@ function ReportsPage() {
       cancelled = true;
     };
   }, [apiBaseUrl]);
+
+  const replayReport = (report: ReportRecord) => {
+    repository.loadTaskIntoWorkspace(report.id);
+    setStatus(`已载入任务回放：${report.name}`);
+    navigate('/workspace');
+  };
 
   return (
     <div className="workspace-grid">
@@ -59,6 +67,19 @@ function ReportsPage() {
                 </button>
                 <button className="action-button secondary-button" type="button" onClick={() => setStatus(`已基于 ${report.name} 重新发起分析`)}>
                   重新分析
+                </button>
+                <button className="action-button secondary-button" type="button" onClick={() => replayReport(report)}>
+                  任务回放
+                </button>
+                <button
+                  className="action-button tertiary-button"
+                  type="button"
+                  onClick={() => {
+                    repository.saveActiveTaskAsTemplate({ name: report.name, request: report.request, summary: report.summary });
+                    setStatus(`已另存为模板：${report.name}`);
+                  }}
+                >
+                  另存为模板
                 </button>
               </div>
             </article>

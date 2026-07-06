@@ -99,7 +99,8 @@ describe('artifact flow', () => {
     await user.clear(screen.getByLabelText('执行摘要'));
     await user.type(screen.getByLabelText('执行摘要'), '沉淀一个适合客单价波动复盘的模板。');
     await user.click(screen.getByRole('button', { name: '保存为模板' }));
-    await user.click(screen.getByRole('button', { name: '模板库' }));
+    await user.click(screen.getByRole('button', { name: '01 输入准备' }));
+    await user.click(screen.getByRole('button', { name: '从模板新建' }));
 
     const firstTemplateCard = screen.getAllByRole('article')[0];
     expect(firstTemplateCard).toHaveTextContent('分析华东区域客单价变化并形成复盘模板');

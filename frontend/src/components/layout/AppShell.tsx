@@ -12,10 +12,7 @@ const routeMeta: Record<string, { icon: string; label: string; crumb: string; ti
   '/workflow-designer': { icon: '04', label: '工作流画布', crumb: '流程编排', title: '工作流画布' },
   '/data-sources': { icon: '05', label: '数据集管理', crumb: '数据接入', title: '数据源管理' },
   '/reports': { icon: '06', label: '报告中心', crumb: '报告管理', title: '报告中心' },
-  '/templates': { icon: '07', label: '模板库', crumb: '模板复用', title: '模板库' },
-  '/history': { icon: '08', label: '历史会话', crumb: '历史回放', title: '历史任务' },
-  '/workspace-async': { icon: '09', label: '异步沙箱', crumb: '异步沙箱', title: '异步工作台沙箱' },
-  '/settings': { icon: '10', label: '系统设置', crumb: '系统设置', title: '系统设置' },
+  '/settings': { icon: '07', label: '系统设置', crumb: '系统设置', title: '系统设置' },
 };
 
 type AppShellProps = {
@@ -37,15 +34,15 @@ function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: 
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
   const activePath = routePath ?? location.pathname;
   const currentRoute = routeMeta[activePath] ?? routeMeta['/workspace'];
-  const showsContextPanel = activePath === '/workspace' || activePath === '/workspace-async';
+  const showsContextPanel = activePath === '/workspace';
   const showsWorkspaceActions = activePath === '/workspace';
   const finishedNodes = activeTask.snapshot.nodes.filter((node) => node.status === 'success').length;
   const runningNode = activeTask.snapshot.nodes.find((node) => node.status === 'running');
   const searchResults = Object.entries(routeMeta).filter(([, meta]) => meta.label.includes(searchQuery) || meta.title.includes(searchQuery));
   const goToSearchResult = (kind: string) => {
     if (kind === 'dataset') navigateTo('/data-sources');
-    else if (kind === 'template') navigateTo('/templates');
-    else navigateTo('/history');
+    else if (kind === 'template') navigateTo('/workspace');
+    else navigateTo('/reports');
   };
 
   useEffect(() => {

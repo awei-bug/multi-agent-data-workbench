@@ -1,10 +1,15 @@
 import { useState } from 'react';
 
+import { createMockTaskRepository } from '../mock/mockTaskRepository';
+
 const agents = ['调度 Agent', '数据清洗 Agent', '统计分析 Agent', '可视化 Agent', '报告撰写 Agent', '审核校验 Agent'];
+const repository = createMockTaskRepository();
 
 function WorkflowDesignerPage() {
   const [canvasAgents, setCanvasAgents] = useState(agents.slice(0, 4));
   const [selectedAgent, setSelectedAgent] = useState(canvasAgents[0]);
+  const [status, setStatus] = useState('等待选择或保存流程模板');
+  const templates = repository.listTemplates();
   const addAgent = (agent: string) => {
     setCanvasAgents((current) => (current.includes(agent) ? current : [...current, agent]));
     setSelectedAgent(agent);
@@ -43,6 +48,30 @@ function WorkflowDesignerPage() {
             <h3>工作流画布</h3>
             <p>以流程图方式查看 Agent 执行顺序、依赖关系和当前进度。</p>
           </div>
+        </div>
+        <div className="actions-row workflow-template-bar">
+          <select
+            className="text-input"
+            aria-label="选择流程模板"
+            defaultValue=""
+            onChange={(event) => {
+              const template = templates.find((item) => item.id === event.target.value);
+              if (!template) return;
+              setCanvasAgents(agents);
+              setSelectedAgent(agents[0]);
+              setStatus(`已加载模板：${template.name}`);
+            }}
+          >
+            <option value="" disabled>
+              选择流程模板
+            </option>
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
+              </option>
+            ))}
+          </select>
+          <span className="status-note">{status}</span>
         </div>
         <div
           className="workflow-board"
@@ -83,7 +112,7 @@ function WorkflowDesignerPage() {
         </label>
         <textarea id="node-goal" className="text-input text-area" defaultValue="输出清洗规则、异常字段说明和后续指标计算输入。" />
         <div className="actions-row">
-          <button className="action-button" type="button">
+          <button className="action-button" type="button" onClick={() => setStatus(`已保存模板：${selectedAgent} 流程`)}>
             保存流程模板
           </button>
         </div>

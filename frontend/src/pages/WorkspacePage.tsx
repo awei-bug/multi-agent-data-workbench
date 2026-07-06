@@ -9,15 +9,18 @@ import RequirementComposer from '../components/intent/RequirementComposer';
 import ReportEditor from '../components/report/ReportEditor';
 import ExecutionTimeline from '../components/workflow/ExecutionTimeline';
 import WorkflowCanvas from '../components/workflow/WorkflowCanvas';
+import { createMockTaskRepository } from '../mock/mockTaskRepository';
 import { hasLoadedSampleData } from './workspaceSampleData';
 import { useWorkspaceSession } from './useWorkspaceSession';
+
+const repository = createMockTaskRepository();
 
 type WorkspacePageProps = {
   onFocusedNodeChange?: (nodeId: string | null) => void;
 };
 
 type WorkspacePhase = 'input' | 'execution' | 'output';
-type InputPane = 'data' | 'intent';
+type InputPane = 'data' | 'intent' | 'templates' | 'history';
 type ExecutionPane = 'monitor' | 'data';
 type OutputPane = 'report' | 'export';
 
@@ -39,11 +42,13 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
     handleChartTitleChange,
     handleConfirmCsvMapping,
     handleCreateFromReplay,
+    handleCreateFromTemplate,
     handleExitReplay,
     handleExport,
     handleFail,
     handleImportCsvData,
     handleLoadSampleData,
+    handleLoadHistoryTask,
     handleManualRevision,
     handleParse,
     handlePause,
@@ -58,6 +63,8 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
   } = useWorkspaceSession();
 
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
+  const templates = repository.listTemplates();
+  const recentTasks = repository.listRecentTasks();
 
   const handleParseWithApi = async (payload: Parameters<typeof handleParse>[0]) => {
     if (!apiBaseUrl || !payload) {
@@ -154,6 +161,12 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
             <button className={inputPane === 'intent' ? 'active' : ''} type="button" onClick={() => setInputPane('intent')}>
               需求确认
             </button>
+            <button className={inputPane === 'templates' ? 'active' : ''} type="button" onClick={() => setInputPane('templates')}>
+              从模板新建
+            </button>
+            <button className={inputPane === 'history' ? 'active' : ''} type="button" onClick={() => setInputPane('history')}>
+              历史任务
+            </button>
           </div>
           {inputPane === 'data' ? (
             <DataSourceUploader
@@ -162,7 +175,8 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
               onImportCsvData={handleImportCsvData}
               onLoadSampleData={handleLoadSampleData}
             />
-          ) : (
+          ) : null}
+          {inputPane === 'intent' ? (
             <>
               <RequirementComposer
                 initialValue={composerValue}
@@ -173,7 +187,75 @@ function WorkspacePage({ onFocusedNodeChange }: WorkspacePageProps) {
               />
               <IntentSummary summary={parsedIntent} />
             </>
-          )}
+          ) : null}
+          {inputPane === 'templates' ? (
+            <section className="content-card workspace-section">
+              <div className="section-heading">
+                <span className="section-index">TP</span>
+                <div>
+                  <h3>从模板新建</h3>
+                  <p>复用高频分析流程，不再保留独立模板库一级入口。</p>
+                </div>
+              </div>
+              <div className="history-list history-list-grid">
+                {templates.map((template) => (
+                  <article className="history-card" key={template.id}>
+                    <div className="history-card-header">
+                      <h4>{template.name}</h4>
+                      <span className="history-badge history-badge-secondary">{template.tag}</span>
+                    </div>
+                    <p>{template.description}</p>
+                    <div className="actions-row">
+                      <button
+                        className="action-button"
+                        type="button"
+                        onClick={() => {
+                          handleCreateFromTemplate(template);
+                          setInputPane('intent');
+                        }}
+                      >
+                        使用模板
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {inputPane === 'history' ? (
+            <section className="content-card workspace-section">
+              <div className="section-heading">
+                <span className="section-index">HT</span>
+                <div>
+                  <h3>历史任务</h3>
+                  <p>历史会话已合并到工作台回放，不再占用独立一级菜单。</p>
+                </div>
+              </div>
+              <div className="history-list history-list-grid">
+                {recentTasks.map((task) => (
+                  <article className="history-card" key={task.id}>
+                    <div className="history-card-header">
+                      <h4>{task.name}</h4>
+                      <span className="history-badge">{task.status}</span>
+                    </div>
+                    <p>{task.summary}</p>
+                    <div className="actions-row">
+                      <button
+                        className="action-button secondary-button"
+                        type="button"
+                        onClick={() => {
+                          handleLoadHistoryTask(task.id);
+                          setActivePhase('execution');
+                        }}
+                      >
+                        回放到工作台
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </>
       ) : null}
 

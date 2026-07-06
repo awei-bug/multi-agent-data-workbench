@@ -4,14 +4,11 @@ import { useLocation } from 'react-router-dom';
 import AppShell from './components/layout/AppShell';
 import { WorkbenchShellContext } from './context/WorkbenchShellContext';
 import { createMockTaskRepository } from './mock/mockTaskRepository';
-import AsyncWorkspacePage from './pages/AsyncWorkspacePage';
 import ChatAnalysisPage from './pages/ChatAnalysisPage';
 import DashboardPage from './pages/DashboardPage';
 import DataSourcesPage from './pages/DataSourcesPage';
-import HistoryPage from './pages/HistoryPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
-import TemplatesPage from './pages/TemplatesPage';
 import WorkflowDesignerPage from './pages/WorkflowDesignerPage';
 import WorkspacePage from './pages/WorkspacePage';
 import { defaultWorkbenchContext } from './types/workbench';
@@ -19,6 +16,8 @@ import { defaultWorkbenchContext } from './types/workbench';
 const repository = createMockTaskRepository();
 
 function normalizePath(pathname: string) {
+  if (pathname === '/templates' || pathname === '/workspace-async') return '/workspace';
+  if (pathname === '/history') return '/reports';
   return pathname === '/' ? '/workspace' : pathname;
 }
 
@@ -104,12 +103,6 @@ function App() {
       <DataSourcesPage />
     ) : routePath === '/reports' ? (
       <ReportsPage />
-    ) : routePath === '/templates' ? (
-      <TemplatesPage />
-    ) : routePath === '/workspace-async' ? (
-      <AsyncWorkspacePage />
-    ) : routePath === '/history' ? (
-      <HistoryPage />
     ) : routePath === '/settings' ? (
       <SettingsPage />
     ) : (

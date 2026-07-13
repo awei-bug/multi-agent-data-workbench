@@ -6,6 +6,7 @@ dist/
 frontend/node_modules/
 frontend/dist/
 backend/workspace.sqlite3
+workspace.sqlite3
 backend/.pytest_cache/
 backend/**/__pycache__/
 frontend/coverage/

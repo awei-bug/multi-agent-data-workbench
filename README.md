@@ -1,98 +1,270 @@
 # 多 Agent 协同数据分析创作工作台
 
-这是一个可运行的多 Agent 数据分析与报告创作工作台。系统把数据源接入、自然语言需求解析、Agent 流程执行、图表分析、报告编辑、模板复用和导出串成一条完整工作流。
+这是一个可运行的多 Agent 数据分析与报告创作工作台，当前版本已经打通了从数据接入、需求解析、工作流执行、图表生成、报告编辑到结果导出的完整主流程。
+
+当前项目定位不是“只有页面原型”，而是“可本地运行、可联调、可继续向企业级推进”的单用户工作台系统。
+
+## 主要能力
+
+- 支持上传和解析 `CSV`、`Excel`、`JSON`、`TXT`、`Markdown`、`Word`、`PDF`
+- 支持自然语言输入分析需求，并生成结构化意图
+- 支持多 Agent 工作流执行
+- 支持图表分析、数据洞察、报告编辑与导出
+- 支持历史任务保存、模板沉淀、任务回放
+- 支持审计事件、健康检查、管理接口保护
+- 支持本地账号注册/登录与 JWT 作用域绑定
+- 支持 RBAC 角色：viewer / analyst / admin
+- 支持异步工作流执行与任务状态轮询
+- 支持历史/模板/审计按租户用户列级隔离与索引
+- 支持 JSON 结构化日志与 Prometheus `/metrics`
+- 支持 Redis 共享工作流队列与独立 worker
+- 支持 Sentry 错误追踪与 Webhook 告警
+- 支持 CI/CD：测试门禁 + 镜像构建推送（GHCR）
+- 支持 Staging 远程自动部署（SSH + compose 健康检查）
+- 支持 Redis 共享限流（多实例）
+- 支持外部连接器：HTTP JSON / PostgreSQL（凭据加密）
+- 支持 Staging 自动部署与 Production 审批部署
+- 支持 PostgreSQL、Docker Compose、启动前自动迁移数据库
 
 ## 技术栈
 
-- 前端：React 19、TypeScript、Vite、React Router、Zustand、ECharts
-- 后端：Python、FastAPI、Uvicorn
-- 数据库：PostgreSQL
-- 大模型接口：`https://apihub.agnes-ai.com/v1`
-- 工程化：Docker Compose、GitHub Actions、前后端自动化测试
+### 前端
+
+- React
+- TypeScript
+- Vite
+- ECharts
+
+### 后端
+
+- Python
+- FastAPI
+- SQLAlchemy
+- Alembic
+- PostgreSQL / SQLite
+
+### 部署与运行
+
+- Docker
+- Docker Compose
+- Nginx
 
 ## 目录结构
 
 ```text
-frontend/   前端项目：页面、组件、样式、前端测试和构建配置
-backend/    Python 后端：FastAPI 服务、仓储层、Agent 工作流和后端测试
-tools/      本地启动、检查和验证脚本
-docs/       项目中文说明、需求文档和数据库迁移说明
-README.md   项目入口说明
+frontend/    前端工作台
+backend/     后端服务、迁移、测试
+docs/        中文项目文档
+tools/       启动、验证脚本
 ```
 
 ## 本地启动
 
-推荐使用统一启动脚本：
+### 方式一：直接本地启动
+
+后端：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\start-workspace.ps1
+$env:PYTHONPATH="backend"
+python backend/start-workspace-api.py
 ```
 
-默认访问地址：
-
-- 前端工作台：`http://127.0.0.1:5174/workspace`
-- 后端健康检查：`http://127.0.0.1:8787/api/health`
-
-启动前需要准备 `.env`：
+前端：
 
 ```powershell
-Copy-Item .env.example .env
+cd frontend
+npm install
+npm run dev
 ```
 
-然后在 `.env` 中填写可用的模型密钥，并确认 PostgreSQL 连接地址可用。
+默认地址：
 
-## Docker Compose 启动
+- 前端：`http://127.0.0.1:5174`
+- 后端：`http://127.0.0.1:8787`
+- 健康检查：`http://127.0.0.1:8787/api/health`
+
+### 方式二：Docker Compose 启动
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item .env.compose.example .env
 docker compose up --build
 ```
 
-Docker Compose 会启动 PostgreSQL、Python 后端和前端静态服务。
+默认地址：
 
-## 核心环境变量
+- 前端：`http://127.0.0.1:8080`
+- 后端：`http://127.0.0.1:8787`
+- PostgreSQL：`127.0.0.1:5432`
 
-- `AGNES_API_KEY` / `OPENAI_API_KEY` / `APIHUB_API_KEY`：模型密钥，三者任意一个可用即可。
-- `WORKSPACE_DATABASE_URL`：PostgreSQL 连接串。
-- `WORKSPACE_MODEL_TIMEOUT_SECONDS`：模型调用超时时间，默认 `60`。
-- `WORKSPACE_MAX_REQUEST_BODY_BYTES`：请求体大小限制。
-- `WORKSPACE_RATE_LIMIT_PER_MINUTE`：接口限流阈值。
-- `WORKSPACE_CORS_ORIGINS`：允许访问后端的前端地址，多个地址用英文逗号分隔。
+## 环境变量
+
+### 根目录 Compose 环境
+
+参考：
+
+- [.env.compose.example](F:/Python_code/多Agent协同数据分析创作工作台/.env.compose.example)
+
+### 后端环境
+
+参考：
+
+- [backend/.env.example](F:/Python_code/多Agent协同数据分析创作工作台/backend/.env.example)
+
+关键变量：
+
+- `WORKSPACE_DATABASE_URL`
+- `WORKSPACE_MODEL_BASE_URL`
+- `WORKSPACE_MODEL_NAME`
+- `WORKSPACE_ADMIN_API_KEY`
+- `WORKSPACE_AUTH_SECRET`
+- `WORKSPACE_AUTH_REQUIRED`
+- `WORKSPACE_WORKFLOW_ASYNC`
+- `WORKSPACE_JSON_LOGS`
+- `WORKSPACE_METRICS_ENABLED`
+- `WORKSPACE_QUEUE_BACKEND`
+- `WORKSPACE_REDIS_URL`
+- `WORKSPACE_SENTRY_DSN`
+- `WORKSPACE_ALERT_WEBHOOK_URL`
+- `WORKSPACE_RATE_LIMIT_BACKEND`
+- `WORKSPACE_CREDENTIALS_SECRET`
+- `APIHUB_API_KEY`
+- `WORKSPACE_RUN_MIGRATIONS_ON_START`
+
+### 前端环境
+
+参考：
+
+- [frontend/.env.example](F:/Python_code/多Agent协同数据分析创作工作台/frontend/.env.example)
+
+关键变量：
+
+- `VITE_WORKSPACE_API_BASE_URL`
+
+## 数据库迁移
+
+项目当前支持启动前自动执行 Alembic 迁移。
+
+如果需要手动执行：
+
+```powershell
+cd backend
+alembic upgrade head
+```
+
+## 管理接口保护
+
+当设置 `WORKSPACE_ADMIN_API_KEY` 后，部分敏感接口需要带请求头：
+
+```http
+x-admin-api-key: 你的管理口令
+```
+
+详情参考：
+
+- [docs/管理接口清单.md](F:/Python_code/多Agent协同数据分析创作工作台/docs/管理接口清单.md)
+
+## 发布与 CD
+
+本地构建并部署预构建镜像：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Deploy
+```
+
+打版本标签触发 GitHub CD：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+镜像默认推送到：
+
+```text
+ghcr.io/<owner>/<repo>/backend:<tag>
+ghcr.io/<owner>/<repo>/frontend:<tag>
+```
+
+使用发布 compose：
+
+```powershell
+$env:IMAGE_PREFIX="ghcr.io/<owner>/<repo>"
+$env:IMAGE_TAG="v1.0.0"
+docker compose -f docker-compose.release.yml --env-file .env up -d
+```
+
+远程部署到 staging：
+
+```bash
+export DEPLOY_HOST=staging.example.com
+export DEPLOY_USER=deploy
+export DEPLOY_SSH_KEY_PATH=~/.ssh/staging_deploy
+export IMAGE_PREFIX=ghcr.io/<owner>/<repo>
+export IMAGE_TAG=v1.0.0
+bash tools/ssh-deploy.sh
+```
+
+Production 审批发布：
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+# 然后在 GitHub Environment production 中审批
+```
+
+## 项目文档
+
+- [docs/项目总览.md](docs/项目总览.md)
+- [docs/用户操作说明.md](docs/用户操作说明.md)
+- [docs/企业级部署运行说明.md](docs/企业级部署运行说明.md)
+- [docs/持续集成说明.md](docs/持续集成说明.md)
+- [docs/持续交付说明.md](docs/持续交付说明.md)
+- [docs/远程部署说明.md](docs/远程部署说明.md)
+- [docs/生产部署说明.md](docs/生产部署说明.md)
+- [docs/上线检查清单.md](docs/上线检查清单.md)
+- [docs/管理接口清单.md](docs/管理接口清单.md)
 
 ## 验证命令
 
-一键验证：
+后端测试：
+
+```powershell
+$env:PYTHONPATH="backend"
+python -m pytest backend/tests
+```
+
+前端测试与构建：
+
+```powershell
+cd frontend
+npm test
+npm run build
+```
+
+项目整体验证：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\verify-project.ps1
 ```
 
-已启动服务巡检：
+## 当前状态
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\check-system.ps1
-```
+当前项目已经具备：
 
-## 主要工作流
+- 可运行前后端主流程
+- 真实文件上传解析
+- 图表与报告输出
+- PostgreSQL 支持
+- 健康探针
+- 审计事件
+- 管理接口保护骨架
+- Docker Compose 编排
+- 自动迁移数据库
 
-1. 用户接入 CSV 数据或加载系统内置样例数据。
-2. 用户输入自然语言分析需求。
-3. 后端调用大模型解析分析意图。
-4. 多 Agent 流程依次完成数据清洗、指标计算、可视化、洞察分析、报告生成和审核校验。
-5. 前端展示数据预览、图表、运行日志和报告草稿。
-6. 用户编辑报告后导出，或保存为可复用模板。
+当前还未完全企业化的部分：
 
-## 已落地能力
-
-- 前后端分离架构，支持本地脚本和 Docker Compose 启动。
-- PostgreSQL 持久化和 Alembic 数据库迁移。
-- 大模型调用失败分类、超时、重试和日志记录。
-- 多 Agent 任务节点状态、失败提示和重试入口。
-- 前端路由、工作台主流程、图表预览、报告编辑、模板和历史页面。
-- GitHub Actions 自动运行后端测试、前端测试和前端生产构建。
-
-## 相关文档
-
-- [项目总览](docs/项目总览.md)
-- [数据库迁移](docs/数据库迁移.md)
-- [多 Agent 协同数据分析](docs/多Agent协同数据分析.md)
+- 完整用户鉴权体系
+- 细粒度 RBAC
+- 多实例共享限流
+- 任务队列与异步 Worker
+- 监控告警与自动化发布流水线

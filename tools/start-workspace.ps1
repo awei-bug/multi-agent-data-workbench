@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $workspace 'backend'
 $frontendDir = Join-Path $workspace 'frontend'
+$pythonExe = Join-Path $workspace '.venv\Scripts\python.exe'
 Set-Location $workspace
 
 function Import-DotEnv {
@@ -48,14 +49,12 @@ Assert-PathExists -Path $frontendDir -Message "Frontend directory not found: $fr
 Assert-PathExists -Path (Join-Path $backendDir 'start-workspace-api.py') -Message 'Backend entrypoint missing: backend\start-workspace-api.py'
 Assert-PathExists -Path (Join-Path $backendDir 'requirements.txt') -Message 'Backend requirements missing: backend\requirements.txt'
 Assert-PathExists -Path (Join-Path $frontendDir 'package.json') -Message 'Frontend package missing: frontend\package.json'
+Assert-PathExists -Path $pythonExe -Message 'Python virtual environment missing. Run: py -m venv .venv; .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt'
 
 if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
   throw 'npm.cmd not found. Install Node.js or add npm to PATH.'
 }
 
-if (-not ($env:AGNES_API_KEY -or $env:OPENAI_API_KEY -or $env:APIHUB_API_KEY)) {
-  throw 'Missing model API key. Set AGNES_API_KEY, OPENAI_API_KEY, or APIHUB_API_KEY.'
-}
 
 function Stop-PortProcess {
   param([int]$Port)
@@ -134,15 +133,15 @@ function Test-DatabaseReachable {
   }
 }
 
+Stop-PortProcess -Port $frontendPort
+Stop-PortProcess -Port $backendPort
+Start-Sleep -Seconds 2
+
 foreach ($file in @('backend-api.out.log', 'backend-api.err.log', 'frontend-vite.out.log', 'frontend-vite.err.log')) {
   if (Test-Path $file) {
     Remove-Item -Force $file
   }
 }
-
-Stop-PortProcess -Port $frontendPort
-Stop-PortProcess -Port $backendPort
-Start-Sleep -Seconds 2
 
 Test-DatabaseReachable -DatabaseUrl $databaseUrl
 
@@ -151,23 +150,7 @@ $env:WORKSPACE_API_PORT = "$backendPort"
 $env:WORKSPACE_API_HOST = $apiHost
 $env:BROWSER = 'none'
 
-$pythonExe = $null
 $pythonArgs = @('start-workspace-api.py')
-
-if (Get-Command py -ErrorAction SilentlyContinue) {
-  $pythonExe = 'py'
-} elseif (Test-Path 'D:\学习\Anaconda\python.exe') {
-  $pythonExe = 'D:\学习\Anaconda\python.exe'
-} else {
-  $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-  if ($pythonCommand) {
-    $pythonExe = $pythonCommand.Source
-  }
-}
-
-if (-not $pythonExe) {
-  throw 'Python executable not found.'
-}
 
 $backend = Start-Process -FilePath $pythonExe -ArgumentList $pythonArgs -WorkingDirectory $backendDir -WindowStyle Hidden -RedirectStandardOutput (Join-Path $workspace 'backend-api.out.log') -RedirectStandardError (Join-Path $workspace 'backend-api.err.log') -PassThru
 $frontend = Start-Process -FilePath 'npm.cmd' -ArgumentList @('run', 'dev', '--', '--host', $frontendHost, '--port', "$frontendPort") -WorkingDirectory $frontendDir -WindowStyle Hidden -RedirectStandardOutput (Join-Path $workspace 'frontend-vite.out.log') -RedirectStandardError (Join-Path $workspace 'frontend-vite.err.log') -PassThru

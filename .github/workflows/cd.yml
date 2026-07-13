@@ -1,0 +1,300 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      push_images:
+        description: "是否推送镜像到 GHCR"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      tag_override:
+        description: "可选镜像标签覆盖（为空则用 git ref）"
+        required: false
+        default: ""
+      deploy_staging:
+        description: "是否部署到 staging（需配置 STAGING_HOST）"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      deploy_production:
+        description: "是否部署到 production（仅建议 v* 标签；需审批）"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    name: 解析版本与镜像名
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      image_prefix: ${{ steps.meta.outputs.image_prefix }}
+      should_push: ${{ steps.meta.outputs.should_push }}
+      should_deploy_staging: ${{ steps.meta.outputs.should_deploy_staging }}
+      should_deploy_production: ${{ steps.meta.outputs.should_deploy_production }}
+      is_version_tag: ${{ steps.meta.outputs.is_version_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: |
+          REPO_LOWER=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_PREFIX="${REGISTRY}/${REPO_LOWER}"
+          if [ -n "${{ inputs.tag_override }}" ]; then
+            VERSION="${{ inputs.tag_override }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="sha-${GITHUB_SHA::7}"
+          fi
+
+          SHOULD_PUSH="true"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.push_images }}" = "false" ]; then
+            SHOULD_PUSH="false"
+          fi
+
+          IS_VERSION_TAG="false"
+          if [[ "${VERSION}" == v* ]]; then
+            IS_VERSION_TAG="true"
+          fi
+
+          SHOULD_DEPLOY_STAGING="false"
+          if [ -n "${{ secrets.STAGING_HOST }}" ] && [ "${SHOULD_PUSH}" = "true" ]; then
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              SHOULD_DEPLOY_STAGING="true"
+            fi
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.deploy_staging }}" = "true" ]; then
+              SHOULD_DEPLOY_STAGING="true"
+            fi
+          fi
+
+          # Production is intentionally stricter:
+          # - only version tags (v*)
+          # - or manual dispatch with deploy_production=true AND version-like tag
+          SHOULD_DEPLOY_PRODUCTION="false"
+          if [ -n "${{ secrets.PRODUCTION_HOST }}" ] && [ "${SHOULD_PUSH}" = "true" ] && [ "${IS_VERSION_TAG}" = "true" ]; then
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              SHOULD_DEPLOY_PRODUCTION="true"
+            fi
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.deploy_production }}" = "true" ]; then
+              SHOULD_DEPLOY_PRODUCTION="true"
+            fi
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${IMAGE_PREFIX}" >> "$GITHUB_OUTPUT"
+          echo "should_push=${SHOULD_PUSH}" >> "$GITHUB_OUTPUT"
+          echo "should_deploy_staging=${SHOULD_DEPLOY_STAGING}" >> "$GITHUB_OUTPUT"
+          echo "should_deploy_production=${SHOULD_DEPLOY_PRODUCTION}" >> "$GITHUB_OUTPUT"
+          echo "is_version_tag=${IS_VERSION_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${VERSION}"
+          echo "Resolved image_prefix=${IMAGE_PREFIX}"
+          echo "Resolved should_push=${SHOULD_PUSH}"
+          echo "Resolved should_deploy_staging=${SHOULD_DEPLOY_STAGING}"
+          echo "Resolved should_deploy_production=${SHOULD_DEPLOY_PRODUCTION}"
+
+  build-and-push:
+    name: 构建并推送镜像
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+            image_suffix: backend
+          - name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            image_suffix: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: needs.prepare.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: tags
+        shell: bash
+        run: |
+          PREFIX="${{ needs.prepare.outputs.image_prefix }}"
+          SUFFIX="${{ matrix.image_suffix }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAGS="${PREFIX}/${SUFFIX}:${VERSION}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAGS="${TAGS},${PREFIX}/${SUFFIX}:latest"
+          fi
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TAGS="${TAGS},${PREFIX}/${SUFFIX}:main"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Image tags: ${TAGS}"
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: ${{ needs.prepare.outputs.should_push == 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.image_suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_suffix }}
+          build-args: |
+            VITE_WORKSPACE_API_BASE_URL=
+
+  release-manifest:
+    name: 生成发布清单
+    runs-on: ubuntu-latest
+    needs: [prepare, build-and-push]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 写出 release 元数据
+        shell: bash
+        run: |
+          mkdir -p dist
+          cat > dist/release-manifest.json <<EOF
+          {
+            "repository": "${GITHUB_REPOSITORY}",
+            "ref": "${GITHUB_REF}",
+            "sha": "${GITHUB_SHA}",
+            "version": "${{ needs.prepare.outputs.version }}",
+            "imagePrefix": "${{ needs.prepare.outputs.image_prefix }}",
+            "pushed": ${{ needs.prepare.outputs.should_push }},
+            "deployStaging": ${{ needs.prepare.outputs.should_deploy_staging }},
+            "deployProduction": ${{ needs.prepare.outputs.should_deploy_production }},
+            "isVersionTag": ${{ needs.prepare.outputs.is_version_tag }},
+            "images": {
+              "backend": "${{ needs.prepare.outputs.image_prefix }}/backend:${{ needs.prepare.outputs.version }}",
+              "frontend": "${{ needs.prepare.outputs.image_prefix }}/frontend:${{ needs.prepare.outputs.version }}",
+              "worker": "${{ needs.prepare.outputs.image_prefix }}/backend:${{ needs.prepare.outputs.version }}"
+            },
+            "composeFile": "docker-compose.release.yml"
+          }
+          EOF
+          cat dist/release-manifest.json
+      - name: 上传发布清单
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: dist/release-manifest.json
+
+  deploy-staging:
+    name: 部署到 Staging
+    runs-on: ubuntu-latest
+    needs: [prepare, build-and-push, release-manifest]
+    if: needs.prepare.outputs.should_deploy_staging == 'true'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: 远程部署
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.STAGING_HOST }}
+          DEPLOY_USER: ${{ secrets.STAGING_USER }}
+          DEPLOY_PORT: ${{ secrets.STAGING_SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          DEPLOY_ENV_FILE: ${{ secrets.STAGING_ENV_FILE }}
+          HEALTH_URL: ${{ secrets.STAGING_HEALTH_URL }}
+          IMAGE_PREFIX: ${{ needs.prepare.outputs.image_prefix }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.version }}
+          REGISTRY: ghcr.io
+          REGISTRY_USER: ${{ secrets.STAGING_REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.STAGING_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="${GITHUB_WORKSPACE}/.ssh_staging_key"
+          echo "${{ secrets.STAGING_SSH_KEY }}" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          export DEPLOY_SSH_KEY_PATH="$KEY_PATH"
+          export DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          export DEPLOY_PATH="${DEPLOY_PATH:-/opt/workbench}"
+          export DEPLOY_ENV_FILE="${DEPLOY_ENV_FILE:-/opt/workbench/.env}"
+          export HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8787/api/health/ready}"
+          export REGISTRY_USER="${REGISTRY_USER:-${{ github.actor }}}"
+          export REGISTRY_TOKEN="${REGISTRY_TOKEN:-${{ secrets.GITHUB_TOKEN }}}"
+          chmod +x tools/ssh-deploy.sh tools/remote-deploy.sh
+          bash tools/ssh-deploy.sh
+
+  deploy-production:
+    name: 部署到 Production（审批）
+    runs-on: ubuntu-latest
+    needs: [prepare, build-and-push, release-manifest, deploy-staging]
+    # Wait for staging when it runs; if staging is skipped this job still can run alone via if below.
+    if: |
+      always() &&
+      needs.prepare.outputs.should_deploy_production == 'true' &&
+      needs.build-and-push.result == 'success' &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped')
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 production 仅允许版本标签
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Production deploy requires semantic-like version tag, got: ${VERSION}" >&2
+            exit 1
+          fi
+
+      - name: 远程部署 production
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.PRODUCTION_SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.PRODUCTION_DEPLOY_PATH }}
+          DEPLOY_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+          HEALTH_URL: ${{ secrets.PRODUCTION_HEALTH_URL }}
+          IMAGE_PREFIX: ${{ needs.prepare.outputs.image_prefix }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.version }}
+          REGISTRY: ghcr.io
+          REGISTRY_USER: ${{ secrets.PRODUCTION_REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.PRODUCTION_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="${GITHUB_WORKSPACE}/.ssh_production_key"
+          echo "${{ secrets.PRODUCTION_SSH_KEY }}" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          export DEPLOY_SSH_KEY_PATH="$KEY_PATH"
+          export DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          export DEPLOY_PATH="${DEPLOY_PATH:-/opt/workbench-prod}"
+          export DEPLOY_ENV_FILE="${DEPLOY_ENV_FILE:-/opt/workbench-prod/.env}"
+          export HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8787/api/health/ready}"
+          export REGISTRY_USER="${REGISTRY_USER:-${{ github.actor }}}"
+          export REGISTRY_TOKEN="${REGISTRY_TOKEN:-${{ secrets.GITHUB_TOKEN }}}"
+          chmod +x tools/ssh-deploy.sh tools/remote-deploy.sh
+          bash tools/ssh-deploy.sh

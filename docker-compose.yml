@@ -1,59 +1,142 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: workbench-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 123456
-      POSTGRES_DB: workbench
+      POSTGRES_DB: ${POSTGRES_DB:-workbench}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d workbench"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-workbench}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: workbench-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
       timeout: 5s
       retries: 10
 
   backend:
     build:
       context: ./backend
-    environment:
-      AGNES_API_KEY: ${AGNES_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      APIHUB_API_KEY: ${APIHUB_API_KEY:-}
-      WORKSPACE_API_HOST: 0.0.0.0
-      WORKSPACE_API_PORT: 8787
-      WORKSPACE_DATABASE_URL: postgresql://postgres:123456@postgres:5432/workbench
-      WORKSPACE_MODEL_TIMEOUT_SECONDS: ${WORKSPACE_MODEL_TIMEOUT_SECONDS:-60}
-      WORKSPACE_ENABLE_AUDIT_EVENTS: ${WORKSPACE_ENABLE_AUDIT_EVENTS:-true}
-      WORKSPACE_CORS_ORIGINS: http://127.0.0.1:5174,http://localhost:5174
-    ports:
-      - "8787:8787"
+    container_name: workbench-backend
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      WORKSPACE_API_HOST: 0.0.0.0
+      WORKSPACE_API_PORT: 8787
+      WORKSPACE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-123456}@postgres:5432/${POSTGRES_DB:-workbench}
+      WORKSPACE_MODEL_BASE_URL: ${WORKSPACE_MODEL_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      WORKSPACE_MODEL_NAME: ${WORKSPACE_MODEL_NAME:-Agnes 2.0 Flash}
+      WORKSPACE_MODEL_TIMEOUT_SECONDS: ${WORKSPACE_MODEL_TIMEOUT_SECONDS:-60}
+      WORKSPACE_LOG_LEVEL: ${WORKSPACE_LOG_LEVEL:-INFO}
+      WORKSPACE_RUN_MIGRATIONS_ON_START: ${WORKSPACE_RUN_MIGRATIONS_ON_START:-true}
+      WORKSPACE_ENABLE_AUDIT_EVENTS: ${WORKSPACE_ENABLE_AUDIT_EVENTS:-true}
+      WORKSPACE_RATE_LIMIT_PER_MINUTE: ${WORKSPACE_RATE_LIMIT_PER_MINUTE:-120}
+      WORKSPACE_MAX_REQUEST_BODY_BYTES: ${WORKSPACE_MAX_REQUEST_BODY_BYTES:-10000000}
+      WORKSPACE_CORS_ORIGINS: ${WORKSPACE_CORS_ORIGINS:-http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:8080,http://localhost:8080}
+      WORKSPACE_ARTIFACT_DIR: workspace-artifacts
+      WORKSPACE_DEFAULT_USER_ID: ${WORKSPACE_DEFAULT_USER_ID:-local-user}
+      WORKSPACE_DEFAULT_TENANT_ID: ${WORKSPACE_DEFAULT_TENANT_ID:-local-tenant}
+      WORKSPACE_ADMIN_API_KEY: ${WORKSPACE_ADMIN_API_KEY:-}
+      WORKSPACE_AUTH_SECRET: ${WORKSPACE_AUTH_SECRET:-local-dev-only-change-me}
+      WORKSPACE_AUTH_TOKEN_MINUTES: ${WORKSPACE_AUTH_TOKEN_MINUTES:-720}
+      WORKSPACE_AUTH_REQUIRED: ${WORKSPACE_AUTH_REQUIRED:-false}
+      WORKSPACE_WORKFLOW_ASYNC: ${WORKSPACE_WORKFLOW_ASYNC:-true}
+      WORKSPACE_WORKFLOW_STEP_DELAY_MS: ${WORKSPACE_WORKFLOW_STEP_DELAY_MS:-0}
+      WORKSPACE_JSON_LOGS: ${WORKSPACE_JSON_LOGS:-false}
+      WORKSPACE_METRICS_ENABLED: ${WORKSPACE_METRICS_ENABLED:-true}
+      WORKSPACE_QUEUE_BACKEND: ${WORKSPACE_QUEUE_BACKEND:-redis}
+      WORKSPACE_REDIS_URL: ${WORKSPACE_REDIS_URL:-redis://redis:6379/0}
+      WORKSPACE_RATE_LIMIT_BACKEND: ${WORKSPACE_RATE_LIMIT_BACKEND:-redis}
+      WORKSPACE_ERROR_TRACKING_ENABLED: ${WORKSPACE_ERROR_TRACKING_ENABLED:-true}
+      WORKSPACE_SENTRY_DSN: ${WORKSPACE_SENTRY_DSN:-}
+      WORKSPACE_SENTRY_ENVIRONMENT: ${WORKSPACE_SENTRY_ENVIRONMENT:-compose}
+      WORKSPACE_SENTRY_TRACES_SAMPLE_RATE: ${WORKSPACE_SENTRY_TRACES_SAMPLE_RATE:-0}
+      WORKSPACE_ALERT_WEBHOOK_URL: ${WORKSPACE_ALERT_WEBHOOK_URL:-}
+      WORKSPACE_ALERT_MIN_LEVEL: ${WORKSPACE_ALERT_MIN_LEVEL:-error}
+      APIHUB_API_KEY: ${APIHUB_API_KEY:-}
+    ports:
+      - "${BACKEND_PORT:-8787}:8787"
+    volumes:
+      - backend_artifacts:/app/workspace-artifacts
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=5).read()\""]
-      interval: 10s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health/ready')\""]
+      interval: 15s
       timeout: 5s
-      retries: 6
+      retries: 10
+
+  worker:
+    build:
+      context: ./backend
+    container_name: workbench-worker
+    restart: unless-stopped
+    command: ["python", "start-workflow-worker.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      WORKSPACE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-123456}@postgres:5432/${POSTGRES_DB:-workbench}
+      WORKSPACE_MODEL_BASE_URL: ${WORKSPACE_MODEL_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      WORKSPACE_MODEL_NAME: ${WORKSPACE_MODEL_NAME:-Agnes 2.0 Flash}
+      WORKSPACE_MODEL_TIMEOUT_SECONDS: ${WORKSPACE_MODEL_TIMEOUT_SECONDS:-60}
+      WORKSPACE_LOG_LEVEL: ${WORKSPACE_LOG_LEVEL:-INFO}
+      WORKSPACE_ENABLE_AUDIT_EVENTS: ${WORKSPACE_ENABLE_AUDIT_EVENTS:-true}
+      WORKSPACE_ARTIFACT_DIR: workspace-artifacts
+      WORKSPACE_DEFAULT_USER_ID: ${WORKSPACE_DEFAULT_USER_ID:-local-user}
+      WORKSPACE_DEFAULT_TENANT_ID: ${WORKSPACE_DEFAULT_TENANT_ID:-local-tenant}
+      WORKSPACE_WORKFLOW_ASYNC: "true"
+      WORKSPACE_WORKFLOW_STEP_DELAY_MS: ${WORKSPACE_WORKFLOW_STEP_DELAY_MS:-0}
+      WORKSPACE_JSON_LOGS: ${WORKSPACE_JSON_LOGS:-false}
+      WORKSPACE_QUEUE_BACKEND: redis
+      WORKSPACE_REDIS_URL: ${WORKSPACE_REDIS_URL:-redis://redis:6379/0}
+      WORKSPACE_ERROR_TRACKING_ENABLED: ${WORKSPACE_ERROR_TRACKING_ENABLED:-true}
+      WORKSPACE_SENTRY_DSN: ${WORKSPACE_SENTRY_DSN:-}
+      WORKSPACE_SENTRY_ENVIRONMENT: ${WORKSPACE_SENTRY_ENVIRONMENT:-compose}
+      WORKSPACE_SENTRY_TRACES_SAMPLE_RATE: ${WORKSPACE_SENTRY_TRACES_SAMPLE_RATE:-0}
+      WORKSPACE_ALERT_WEBHOOK_URL: ${WORKSPACE_ALERT_WEBHOOK_URL:-}
+      WORKSPACE_ALERT_MIN_LEVEL: ${WORKSPACE_ALERT_MIN_LEVEL:-error}
+      APIHUB_API_KEY: ${APIHUB_API_KEY:-}
+    volumes:
+      - backend_artifacts:/app/workspace-artifacts
 
   frontend:
     build:
       context: ./frontend
       args:
-        VITE_WORKSPACE_API_BASE_URL: http://127.0.0.1:8787
-    ports:
-      - "5174:80"
+        VITE_WORKSPACE_API_BASE_URL: ${VITE_WORKSPACE_API_BASE_URL:-}
+    container_name: workbench-frontend
+    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
 
 volumes:
-  postgres-data:
+  postgres_data:
+  redis_data:
+  backend_artifacts:

@@ -1,80 +1,104 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, expect, it, vi } from 'vitest';
 
+import { WorkbenchShellContext } from '../../context/WorkbenchShellContext';
 import WorkspacePage from '../../pages/WorkspacePage';
+import { createEmptyTask } from '../../pages/emptyTask';
+import { defaultWorkbenchContext } from '../../types/workbench';
 
-async function switchToExecution(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: '02 执行编排' }));
+function renderWorkspace(stage: 'execution' | 'input' = 'execution') {
+  const task = {
+    ...createEmptyTask(),
+    dataSource: {
+      kind: 'table' as const,
+      fileName: 'sales.csv',
+      columnCount: 2,
+      rowCount: 2,
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'sales', type: 'number' },
+      ],
+      previewRows: [],
+      analysisRows: [],
+      fieldMappings: [],
+      analysisScope: { mode: 'full', rowCount: 2, rowsProcessed: 2 },
+    },
+  };
+
+  return render(
+    <MemoryRouter initialEntries={[`/workspace?step=${stage}`]}>
+      <WorkbenchShellContext.Provider
+        value={{
+          context: defaultWorkbenchContext,
+          setContext: () => undefined,
+          activeTask: task,
+          setActiveTask: (next) => Object.assign(task, next),
+        }}
+      >
+        <WorkspacePage />
+      </WorkbenchShellContext.Provider>
+    </MemoryRouter>,
+  );
 }
 
 describe('workflow execution', () => {
-  it('starts the workflow and exposes running log entries', async () => {
+  it('starts the server-backed workflow', async () => {
     const user = userEvent.setup();
+    const runningTask = {
+      ...createEmptyTask(),
+      dataSource: {
+        kind: 'table' as const,
+        fileName: 'sales.csv',
+        columnCount: 2,
+        rowCount: 2,
+        columns: [
+          { name: 'region', type: 'string' },
+          { name: 'sales', type: 'number' },
+        ],
+        previewRows: [],
+        analysisRows: [],
+        fieldMappings: [],
+        analysisScope: { mode: 'full', rowCount: 2, rowsProcessed: 2 },
+      },
+      snapshot: {
+        ...createEmptyTask().snapshot,
+        phase: 'running',
+        logMessage: '数据接入 Agent 执行中',
+        nodes: [{ id: 'source', label: '数据接入 Agent', status: 'running' }, ...createEmptyTask().snapshot.nodes.slice(1)],
+      },
+      status: '执行中',
+      execution: { mode: 'async', status: 'running', jobId: 'job-1' },
+    };
+    const completedTask = {
+      ...runningTask,
+      snapshot: {
+        ...runningTask.snapshot,
+        phase: 'completed',
+        logMessage: '审核校验 Agent 已完成',
+        nodes: runningTask.snapshot.nodes.map((node) => ({ ...node, status: 'success' as const })),
+      },
+      status: '已完成',
+      execution: { mode: 'async', status: 'succeeded', jobId: 'job-1' },
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(runningTask), { status: 200 }))
+      .mockResolvedValue(new Response(JSON.stringify(completedTask), { status: 200 }));
 
-    render(<WorkspacePage />);
+    renderWorkspace('execution');
+    await user.click(screen.getAllByRole('button', { name: '启动任务' })[0]);
 
-    await switchToExecution(user);
-    await user.click(screen.getByRole('button', { name: '启动任务' }));
-
-    const logCard = screen.getByText('运行日志').closest('.log-card') as HTMLElement | null;
-    const workflowSection = screen
-      .getByRole('heading', { level: 3, name: 'Agent 任务流预览' })
-      .closest('section') as HTMLElement | null;
-
-    expect(logCard).not.toBeNull();
-    expect(workflowSection).not.toBeNull();
-
-    expect(within(logCard!).getByText('数据接入 Agent 执行中')).toBeInTheDocument();
-    expect(within(workflowSection!).getByText('07 审核校验 Agent')).toBeInTheDocument();
-    expect(within(workflowSection!).getAllByText('待执行').length).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledWith('/api/workflow/action', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/workflow/action'))).toBe(true);
+    fetchMock.mockRestore();
   });
 
-  it('blocks workflow start when csv mapping is not confirmed yet', async () => {
-    const user = userEvent.setup();
-
-    render(<WorkspacePage />);
-
-    const file = new File(['month,region,sales\n2025-04,华中,4100\n2025-05,华北,3900'], 'sales.csv', {
-      type: 'text/csv',
-    });
-
-    await user.upload(screen.getByLabelText('上传 CSV'), file);
-    await switchToExecution(user);
-    await user.click(screen.getByRole('button', { name: '启动任务' }));
-
-    const logCard = screen.getByText('运行日志').closest('.log-card') as HTMLElement;
-    expect(within(logCard).getByText('字段映射尚未确认，暂不能启动多 Agent 流程。')).toBeInTheDocument();
-  });
-
-  it('blocks workflow start with a node-specific validation message when required metric mapping is missing', async () => {
-    const user = userEvent.setup();
-
-    render(<WorkspacePage />);
-
-    const file = new File(['month,region,sales\n2025-04,华中,4100\n2025-05,华北,3900'], 'sales.csv', {
-      type: 'text/csv',
-    });
-
-    await user.upload(screen.getByLabelText('上传 CSV'), file);
-    await user.selectOptions(await screen.findByRole('combobox', { name: '映射 sales' }), 'sales');
-    await user.click(screen.getByRole('button', { name: '确认字段映射' }));
-    await switchToExecution(user);
-    await user.click(screen.getByRole('button', { name: '启动任务' }));
-
-    const logCard = screen.getByText('运行日志').closest('.log-card') as HTMLElement;
-    expect(within(logCard).getByText('销售额字段缺少数值列映射，请将数值字段映射为“销售额”。')).toBeInTheDocument();
-  });
-  it('shows a visible recovery hint when the current agent fails', async () => {
-    const user = userEvent.setup();
-
-    render(<WorkspacePage />);
-
-    await switchToExecution(user);
-    await user.click(screen.getByRole('button', { name: '启动任务' }));
-    await user.click(screen.getByRole('button', { name: '模拟失败' }));
-
-    expect(screen.getByRole('alert')).toHaveTextContent('当前节点执行失败');
-    expect(screen.getByRole('button', { name: '重试当前节点' })).toBeEnabled();
+  it('shows all persisted workflow nodes and correction action', () => {
+    renderWorkspace('execution');
+    expect(screen.getAllByText('审核校验 Agent').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: '应用修改' })).toBeInTheDocument();
+    expect(screen.getByText('当前产物：尚未生成')).toBeInTheDocument();
   });
 });

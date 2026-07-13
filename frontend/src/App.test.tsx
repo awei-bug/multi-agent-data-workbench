@@ -1,65 +1,135 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
+import AppShell from './components/layout/AppShell';
+import { WorkbenchShellContext } from './context/WorkbenchShellContext';
+import { createEmptyTask } from './pages/emptyTask';
+import { defaultWorkbenchContext } from './types/workbench';
+import { saveAuthSession } from './utils/workspaceIdentity';
+
+function seedAuthSession() {
+  saveAuthSession({
+    accessToken: 'test-token',
+    user: {
+      id: 'user-test',
+      username: 'tester',
+      tenantId: 'tenant-test',
+      displayName: 'Tester',
+      role: 'analyst',
+    },
+  });
+}
 
 describe('app navigation', () => {
-  it('switches sidebar pages immediately', async () => {
-    const user = userEvent.setup();
-    const { container } = render(
-      <MemoryRouter initialEntries={['/workspace']}>
+  beforeEach(() => {
+    window.localStorage.clear();
+    seedAuthSession();
+  });
+
+  it('exposes the complete MVP navigation', () => {
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
         <App />
       </MemoryRouter>,
     );
-
-    const navButtons = container.querySelectorAll<HTMLButtonElement>('.sidebar-nav .sidebar-link');
-    expect(navButtons).toHaveLength(7);
-    expect(navButtons[1]).toHaveAttribute('aria-current', 'page');
-
-    await user.click(navButtons[4]);
-
-    expect(navButtons[4]).toHaveAttribute('aria-current', 'page');
-    expect(navButtons[1]).not.toHaveAttribute('aria-current');
-    expect(container).not.toHaveTextContent('模板库');
-    expect(container).not.toHaveTextContent('历史会话');
-    expect(container).not.toHaveTextContent('异步沙箱');
+    // 主流程2 + 交付资产3 + 管理3
+    expect(screen.getAllByRole('link')).toHaveLength(8);
+    expect(screen.getByRole('link', { name: '分析工作台' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '数据源' })).toHaveAttribute('href', '/data-sources');
+    expect(screen.getByRole('heading', { name: '总览仪表盘', level: 2 })).toBeInTheDocument();
   });
 
-  it('exposes the consolidated optimization entry points', async () => {
+  it('navigates from the shell to data insights', async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={['/dashboard']}>
         <App />
       </MemoryRouter>,
     );
+    await user.click(screen.getByRole('link', { name: '数据洞察' }));
+    expect(screen.getByRole('heading', { name: '分析结果总览', level: 3 })).toBeInTheDocument();
+  });
 
-    expect(screen.getByLabelText('全局任务上下文')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '一键处理' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: '查看报告' }).length).toBeGreaterThan(0);
+  it('redirects the retired async route to the canonical workspace execution page', () => {
+    render(
+      <MemoryRouter initialEntries={['/workspace?step=execution']}>
+        <App />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('heading', { name: 'Agent 任务流预览', level: 3 })).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole('button', { name: '智能体工作台' }));
-    expect(screen.getByText('进度 33%')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '异步调试沙箱' })).toBeInTheDocument();
+  it('shows an attached dataset in the shell metadata', () => {
+    const task = {
+      ...createEmptyTask(),
+      dataSource: { kind: 'table' as const, fileName: 'uploaded-sales.xlsx', columnCount: 1, rowCount: 1, fieldMappings: [] },
+    };
 
-    await user.click(screen.getByRole('button', { name: '对话分析' }));
-    expect(screen.getByRole('button', { name: '月度复盘' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '展开实时结果' })).toBeInTheDocument();
+    render(
+      <MemoryRouter>
+        <WorkbenchShellContext.Provider
+          value={{ context: defaultWorkbenchContext, setContext: () => undefined, activeTask: task, setActiveTask: () => undefined }}
+        >
+          <AppShell>内容</AppShell>
+        </WorkbenchShellContext.Provider>
+      </MemoryRouter>,
+    );
 
-    await user.click(screen.getByRole('button', { name: '工作流画布' }));
-    expect(screen.getByRole('button', { name: '收起组件库' })).toBeInTheDocument();
-    expect(screen.getByText('高级配置')).toBeInTheDocument();
+    expect(screen.getByText(/uploaded-sales\.xlsx/)).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole('button', { name: '数据集管理' }));
-    expect(screen.getByRole('tab', { name: '本地文件' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: '快速新建任务' }).length).toBeGreaterThan(0);
+  it('loads canonical active task state from the API', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(createEmptyTask()), { status: 200 }));
+    render(
+      <MemoryRouter initialEntries={['/workspace?step=execution']}>
+        <App />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Agent 任务流预览', level: 3 })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/active', expect.any(Object));
+    fetchMock.mockRestore();
+  });
 
-    await user.click(screen.getByRole('button', { name: '报告中心' }));
-    expect(screen.getByLabelText('报告状态筛选')).toBeInTheDocument();
+  it('redirects unauthenticated users to login', () => {
+    window.localStorage.clear();
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <App />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('heading', { name: '接入分析指挥台', level: 2 })).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole('button', { name: '系统设置' }));
-    expect(screen.getByRole('tab', { name: '模型配置' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '编辑敏感配置' })).toBeInTheDocument();
+  it('sends authenticated users from root to a smart next-step page', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...createEmptyTask(),
+          dataSource: {
+            kind: 'table',
+            fileName: 'sales.csv',
+            columnCount: 1,
+            rowCount: 1,
+            fieldMappings: [],
+          },
+          request: '尚未填写分析需求。',
+        }),
+        { status: 200 },
+      ),
+    );
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    // With data but no request, smart entry should land on workspace input.
+    expect(await screen.findByRole('heading', { name: '分析工作台', level: 2 })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/active', expect.any(Object));
+    fetchMock.mockRestore();
   });
 });

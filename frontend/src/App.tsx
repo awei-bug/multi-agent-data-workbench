@@ -1,119 +1,102 @@
-import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import AppShell from './components/layout/AppShell';
+import SmartEntryRedirect from './components/routing/SmartEntryRedirect';
 import { WorkbenchShellContext } from './context/WorkbenchShellContext';
-import { createMockTaskRepository } from './mock/mockTaskRepository';
 import ChatAnalysisPage from './pages/ChatAnalysisPage';
 import DashboardPage from './pages/DashboardPage';
 import DataSourcesPage from './pages/DataSourcesPage';
+import HistoryPage from './pages/HistoryPage';
+import LoginPage from './pages/LoginPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
-import WorkflowDesignerPage from './pages/WorkflowDesignerPage';
+import TemplatesPage from './pages/TemplatesPage';
 import WorkspacePage from './pages/WorkspacePage';
+import { createEmptyTask } from './pages/emptyTask';
 import { defaultWorkbenchContext } from './types/workbench';
+import { getAuthSession, workspaceFetch, type AuthSession } from './utils/workspaceIdentity';
 
-const repository = createMockTaskRepository();
-
-function normalizePath(pathname: string) {
-  if (pathname === '/templates' || pathname === '/workspace-async') return '/workspace';
-  if (pathname === '/history') return '/reports';
-  return pathname === '/' ? '/workspace' : pathname;
+function RequireAuth({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  const session = getAuthSession();
+  if (!session) {
+    return <Navigate replace to="/login" state={{ from: location.pathname }} />;
+  }
+  return children;
 }
 
 function App() {
-  const routerLocation = useLocation();
   const [context, setContext] = useState(defaultWorkbenchContext);
-  const [activeTask, setActiveTask] = useState(repository.getActiveTask());
-  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
-  const [routePath, setRoutePath] = useState(() => normalizePath(routerLocation.pathname));
+  const [activeTask, setActiveTask] = useState(createEmptyTask);
+  const [session, setSession] = useState<AuthSession | null>(() => getAuthSession());
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL ?? '';
 
   useEffect(() => {
-    const syncRoute = () => setRoutePath(normalizePath(window.location.pathname));
-    const originalPushState = window.history.pushState;
-    const originalReplaceState = window.history.replaceState;
-
-    window.history.pushState = function pushState(...args) {
-      originalPushState.apply(this, args);
-      syncRoute();
-    };
-    window.history.replaceState = function replaceState(...args) {
-      originalReplaceState.apply(this, args);
-      syncRoute();
-    };
-
-    window.addEventListener('popstate', syncRoute);
-
+    const syncSession = () => setSession(getAuthSession());
+    window.addEventListener('storage', syncSession);
+    window.addEventListener('focus', syncSession);
     return () => {
-      window.history.pushState = originalPushState;
-      window.history.replaceState = originalReplaceState;
-      window.removeEventListener('popstate', syncRoute);
+      window.removeEventListener('storage', syncSession);
+      window.removeEventListener('focus', syncSession);
     };
   }, []);
 
   useEffect(() => {
-    const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
-
-    if (!apiBaseUrl) {
-      return;
-    }
-
+    if (!session) return;
     let cancelled = false;
-
-    const loadActiveTask = async () => {
-      try {
-        const response = await fetch(`${apiBaseUrl}/api/active-task`, {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (!response.ok) {
-          throw new Error(`Active task fetch failed: ${response.status}`);
-        }
-
-        const task = await response.json();
-
-        if (cancelled) {
-          return;
-        }
-
+    void workspaceFetch(`${apiBaseUrl}/api/tasks/active`)
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('active task unavailable'))))
+      .then((task) => {
+        if (cancelled) return;
         setActiveTask(task);
-        if (task.snapshot?.context) {
-          setContext(task.snapshot.context);
-        }
-      } catch {
-      }
-    };
-
-    void loadActiveTask();
-
+        if (task.snapshot?.context) setContext(task.snapshot.context);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const page =
-    routePath === '/dashboard' ? (
-      <DashboardPage />
-    ) : routePath === '/chat-analysis' ? (
-      <ChatAnalysisPage />
-    ) : routePath === '/workflow-designer' ? (
-      <WorkflowDesignerPage />
-    ) : routePath === '/data-sources' ? (
-      <DataSourcesPage />
-    ) : routePath === '/reports' ? (
-      <ReportsPage />
-    ) : routePath === '/settings' ? (
-      <SettingsPage />
-    ) : (
-      <WorkspacePage onFocusedNodeChange={setFocusedNodeId} />
-    );
+  }, [apiBaseUrl, session?.accessToken]);
 
   return (
     <WorkbenchShellContext.Provider value={{ context, setContext, activeTask, setActiveTask }}>
-      <AppShell focusedNodeId={focusedNodeId} routePath={routePath} onRouteChange={setRoutePath}>
-        {page}
-      </AppShell>
+      <Routes>
+        <Route
+          path="/login"
+          element={
+            session ? (
+              <SmartEntryRedirect fallback="/dashboard" />
+            ) : (
+              <LoginPage onAuthenticated={() => setSession(getAuthSession())} />
+            )
+          }
+        />
+        <Route
+          path="/*"
+          element={
+            <RequireAuth>
+              <AppShell>
+                <Routes>
+                  <Route path="/" element={<SmartEntryRedirect fallback="/dashboard" />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/workspace" element={<WorkspacePage />} />
+                  <Route path="/workspace/input" element={<Navigate replace to="/workspace?step=input" />} />
+                  <Route path="/workspace/execution" element={<Navigate replace to="/workspace?step=execution" />} />
+                  <Route path="/workspace/output" element={<Navigate replace to="/workspace?step=output" />} />
+                  <Route path="/workspace-async" element={<Navigate replace to="/workspace?step=execution" />} />
+                  <Route path="/data-sources" element={<DataSourcesPage />} />
+                  <Route path="/chat-analysis" element={<ChatAnalysisPage />} />
+                  <Route path="/history" element={<HistoryPage />} />
+                  <Route path="/templates" element={<TemplatesPage />} />
+                  <Route path="/reports" element={<ReportsPage />} />
+                  <Route path="/settings" element={<SettingsPage onLoggedOut={() => setSession(null)} />} />
+                  <Route path="*" element={<Navigate replace to="/dashboard" />} />
+                </Routes>
+              </AppShell>
+            </RequireAuth>
+          }
+        />
+      </Routes>
     </WorkbenchShellContext.Provider>
   );
 }

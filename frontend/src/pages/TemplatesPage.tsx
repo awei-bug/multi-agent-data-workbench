@@ -1,172 +1,97 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useWorkbenchShell } from '../context/WorkbenchShellContext';
-import { createMockTaskRepository, type TemplateRecord } from '../mock/mockTaskRepository';
+import { workspaceFetch } from '../utils/workspaceIdentity';
 
-const repository = createMockTaskRepository();
+type TemplateRecord = { id: string; name: string; tag: string; description: string; request: string; summary: string };
 
 function TemplatesPage() {
   const navigate = useNavigate();
   const { setActiveTask } = useWorkbenchShell();
-  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
-  const [favoriteNames, setFavoriteNames] = useState<string[]>([]);
-  const [templates, setTemplates] = useState<TemplateRecord[]>(() => repository.listTemplates());
-  const [loading, setLoading] = useState(Boolean(apiBaseUrl));
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL ?? '';
+  const [templates, setTemplates] = useState<TemplateRecord[]>([]);
+  const [status, setStatus] = useState('');
 
   useEffect(() => {
-    let cancelled = false;
-
-    const loadTemplates = async () => {
-      setLoading(true);
-      try {
-        if (!apiBaseUrl) {
-          const nextTemplates = repository.listTemplates();
-
-          if (!cancelled) {
-            setTemplates(nextTemplates);
-            setLoading(false);
-          }
-
-          return;
-        }
-
-        const response = await fetch(`${apiBaseUrl}/api/templates`, {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (!response.ok) {
-          throw new Error(`Template fetch failed: ${response.status}`);
-        }
-
-        const nextTemplates = (await response.json()) as TemplateRecord[];
-
-        if (!cancelled) {
-          setTemplates(nextTemplates);
-        }
-      } catch {
-        const nextTemplates = repository.listTemplates();
-
-        if (!cancelled) {
-          setTemplates(nextTemplates);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void loadTemplates();
-
-    return () => {
-      cancelled = true;
-    };
+    void workspaceFetch(`${apiBaseUrl}/api/templates`)
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) => setTemplates(items))
+      .catch(() => setStatus('无法读取模板库。'));
   }, [apiBaseUrl]);
 
-  const sortedTemplates = useMemo(() => {
-    const favoriteSet = new Set(favoriteNames);
-    return [...templates].sort((left, right) => {
-      const leftScore = favoriteSet.has(left.name) ? 1 : 0;
-      const rightScore = favoriteSet.has(right.name) ? 1 : 0;
-
-      if (leftScore !== rightScore) {
-        return rightScore - leftScore;
-      }
-
-      return templates.findIndex((item) => item.id === left.id) - templates.findIndex((item) => item.id === right.id);
-    });
-  }, [favoriteNames, templates]);
-
-  const handleUseTemplate = (template: TemplateRecord) => {
-    const activeTask = apiBaseUrl
-      ? {
-          ...repository.getActiveTask(),
-          name: template.name,
-          request: template.request,
-          summary: template.summary,
-        }
-      : repository.createTaskFromTemplate({
-          name: template.name,
-          request: template.request,
-          summary: template.summary,
-        });
-
-    setActiveTask(activeTask);
-    navigate('/workspace');
-  };
-
-  const handleDuplicateTemplate = (templateId: string) => {
-    repository.duplicateTemplate(templateId);
-    setTemplates(repository.listTemplates());
-  };
-
-  const toggleFavorite = (templateName: string) => {
-    setFavoriteNames((current) =>
-      current.includes(templateName) ? current.filter((item) => item !== templateName) : [...current, templateName],
-    );
+  const useTemplate = async (template: TemplateRecord) => {
+    const response = await workspaceFetch(`${apiBaseUrl}/api/templates/${encodeURIComponent(template.id)}/activate`, { method: 'POST' });
+    if (!response.ok) {
+      setStatus('创建模板任务失败。');
+      return;
+    }
+    setActiveTask(await response.json());
+    navigate('/workspace?step=input');
   };
 
   return (
-    <div className="workspace-grid">
+    <div className="workspace-grid compact-page">
+      <section className="enterprise-page-hero">
+        <span className="enterprise-page-kicker">模板库 / 复用分析方案</span>
+        <div className="enterprise-page-title-row">
+          <div>
+            <h3>分析模板中心</h3>
+            <p>统一管理沉淀下来的分析需求、报告结构和复用方案，快速生成一个可直接执行的新任务。</p>
+          </div>
+          <div className="enterprise-page-actions">
+            <button className="action-button" type="button" onClick={() => navigate('/workspace?step=input')}>新建空白任务</button>
+            <button className="action-button secondary-button" type="button" onClick={() => navigate('/history')}>查看历史任务</button>
+          </div>
+        </div>
+      </section>
+
+      <section className="enterprise-metric-strip">
+        <article className="enterprise-metric-card">
+          <span>模板总数</span>
+          <strong>{templates.length}</strong>
+          <small>当前可用模板</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>推荐模板</span>
+          <strong>{templates.filter((item) => item.tag.includes('推荐')).length}</strong>
+          <small>适合直接开箱使用</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>排障模板</span>
+          <strong>{templates.filter((item) => item.tag.includes('排')).length}</strong>
+          <small>偏异常分析与复盘</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>当前状态</span>
+          <strong>{status || '可直接使用模板'}</strong>
+          <small>从模板创建后会跳转到输入准备页</small>
+        </article>
+      </section>
+
       <section className="content-card workspace-section">
         <div className="section-heading">
           <span className="section-index">TL</span>
           <div>
-            <h3>模板库</h3>
-            <p>复用已验证的需求模板、流程结构和导出模式，缩短新任务配置时间。</p>
+            <h3>模板列表</h3>
+            <p>从持久化需求与报告模板创建新的服务端任务。</p>
           </div>
         </div>
-        <div className="summary-grid summary-grid-strong">
-          <div className="summary-card">
-            <span>模板总数</span>
-            <strong>{templates.length}</strong>
-          </div>
-          <div className="summary-card">
-            <span>当前收藏</span>
-            <strong>{favoriteNames.length}</strong>
-          </div>
-        </div>
-        {loading ? (
-          <div className="history-detail-block">
-            <h4>正在加载模板库</h4>
-            <p>页面已切换，正在读取可复用模板和收藏状态。</p>
-          </div>
-        ) : null}
+        {status ? <p className="status-note">{status}</p> : null}
         <div className="history-list history-list-grid">
-          {sortedTemplates.map((template) => {
-            const isFavorite = favoriteNames.includes(template.name);
-
-            return (
-              <article className="history-card" key={template.id}>
-                <div className="history-card-header">
-                  <h4>{template.name}</h4>
-                  <span className="history-badge history-badge-secondary">{isFavorite ? '已收藏' : template.tag}</span>
-                </div>
-                <p>{template.description}</p>
-                <div className="actions-row">
-                  <button className="action-button secondary-button" type="button" onClick={() => handleUseTemplate(template)}>
-                    {`使用模板：${template.name}`}
-                  </button>
-                  <button className="action-button tertiary-button" type="button" onClick={() => handleDuplicateTemplate(template.id)}>
-                    {`复制模板：${template.name}`}
-                  </button>
-                  <button className="action-button tertiary-button" type="button" onClick={() => toggleFavorite(template.name)}>
-                    {isFavorite ? `取消收藏：${template.name}` : `收藏模板：${template.name}`}
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-        <div className="history-detail-block">
-          <h4>后续迭代方向</h4>
-          <ul className="context-risk-list">
-            <li>将模板收藏、复制和版本备注整合到统一模板注册表。</li>
-            <li>追踪模板与历史完成任务之间的血缘关系。</li>
-            <li>统一模板页与历史页中的模板复用入口。</li>
-          </ul>
+          {templates.map((template) => (
+            <article className="history-card" key={template.id}>
+              <div className="history-card-header">
+                <h4>{template.name}</h4>
+                <span className="history-badge">{template.tag}</span>
+              </div>
+              <p>{template.description}</p>
+              <div className="actions-row">
+                <button className="action-button" type="button" onClick={() => void useTemplate(template)}>使用模板</button>
+              </div>
+            </article>
+          ))}
+          {templates.length === 0 ? <p className="status-note">暂无模板。完成一个工作台任务后可以保存为模板。</p> : null}
         </div>
       </section>
     </div>

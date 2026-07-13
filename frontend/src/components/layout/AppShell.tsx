@@ -1,294 +1,194 @@
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { useWorkbenchShell } from '../../context/WorkbenchShellContext';
-import ContextPanel from './ContextPanel';
+import { currentAuthUser, roleLabel } from '../../utils/permissions';
 
-const routeMeta: Record<string, { icon: string; label: string; crumb: string; title: string }> = {
-  '/dashboard': { icon: '01', label: '总览仪表盘', crumb: '平台总览', title: '总览仪表盘' },
-  '/workspace': { icon: '02', label: '智能体工作台', crumb: '新建任务', title: '多 Agent 主流程' },
-  '/chat-analysis': { icon: '03', label: '对话分析', crumb: '对话分析', title: '对话分析' },
-  '/workflow-designer': { icon: '04', label: '工作流画布', crumb: '流程编排', title: '工作流画布' },
-  '/data-sources': { icon: '05', label: '数据集管理', crumb: '数据接入', title: '数据源管理' },
-  '/reports': { icon: '06', label: '报告中心', crumb: '报告管理', title: '报告中心' },
-  '/settings': { icon: '07', label: '系统设置', crumb: '系统设置', title: '系统设置' },
+type NavItem = {
+  path: string;
+  icon: string;
+  label: string;
+  title: string;
+  match?: (pathname: string) => boolean;
 };
 
-type AppShellProps = {
-  children: ReactNode;
-  focusedNodeId?: string | null;
-  routePath?: string;
-  onRouteChange?: (path: string) => void;
+type NavGroup = {
+  title: string;
+  items: NavItem[];
 };
 
-function AppShell({ children, focusedNodeId = null, routePath, onRouteChange }: AppShellProps) {
-  const { context, activeTask } = useWorkbenchShell();
+const navGroups: NavGroup[] = [
+  {
+    title: '主流程',
+    items: [
+      {
+        path: '/workspace',
+        icon: 'WB',
+        label: '分析工作台',
+        title: '分析工作台',
+        match: (pathname) => pathname.startsWith('/workspace'),
+      },
+      {
+        path: '/data-sources',
+        icon: 'DS',
+        label: '数据源',
+        title: '数据源管理',
+      },
+    ],
+  },
+  {
+    title: '交付资产',
+    items: [
+      { path: '/reports', icon: 'RC', label: '报告中心', title: '报告中心' },
+      { path: '/history', icon: 'HT', label: '历史任务', title: '历史任务' },
+      { path: '/templates', icon: 'TP', label: '模板库', title: '模板库' },
+    ],
+  },
+  {
+    title: '管理',
+    items: [
+      { path: '/dashboard', icon: 'OV', label: '总览', title: '总览仪表盘' },
+      { path: '/chat-analysis', icon: 'IA', label: '数据洞察', title: '数据洞察' },
+      { path: '/settings', icon: 'ST', label: '设置', title: '系统设置' },
+    ],
+  },
+];
+
+const allRoutes = navGroups.flatMap((group) => group.items);
+
+function resolveWorkspacePath(phase?: string) {
+  if (phase === 'running' || phase === 'paused' || phase === 'failed') return '/workspace?step=execution';
+  if (phase === 'completed' || phase === 'needs_review' || phase === 'stopped') return '/workspace?step=output';
+  return '/workspace?step=input';
+}
+
+type AppShellProps = { children: ReactNode };
+
+function AppShell({ children }: AppShellProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [contextCollapsed, setContextCollapsed] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [activeTool, setActiveTool] = useState<'notifications' | 'help' | null>(null);
-  const [apiSearchResults, setApiSearchResults] = useState<Array<{ kind: string; id: string; name: string }>>([]);
-  const [notifications, setNotifications] = useState<Array<{ id: string; level: string; message: string }>>([]);
-  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
-  const activePath = routePath ?? location.pathname;
-  const currentRoute = routeMeta[activePath] ?? routeMeta['/workspace'];
-  const showsContextPanel = activePath === '/workspace';
-  const showsWorkspaceActions = activePath === '/workspace';
-  const finishedNodes = activeTask.snapshot.nodes.filter((node) => node.status === 'success').length;
-  const runningNode = activeTask.snapshot.nodes.find((node) => node.status === 'running');
-  const searchResults = Object.entries(routeMeta).filter(([, meta]) => meta.label.includes(searchQuery) || meta.title.includes(searchQuery));
-  const goToSearchResult = (kind: string) => {
-    if (kind === 'dataset') navigateTo('/data-sources');
-    else if (kind === 'template') navigateTo('/workspace');
-    else navigateTo('/reports');
-  };
-
-  useEffect(() => {
-    if (!apiBaseUrl || !searchQuery.trim()) {
-      setApiSearchResults([]);
-      return;
-    }
-    const controller = new AbortController();
-    void fetch(`${apiBaseUrl}/api/search?query=${encodeURIComponent(searchQuery)}`, { signal: controller.signal })
-      .then((response) => (response.ok ? response.json() : []))
-      .then((results) => setApiSearchResults(results))
-      .catch(() => setApiSearchResults([]));
-    return () => controller.abort();
-  }, [apiBaseUrl, searchQuery]);
-
-  useEffect(() => {
-    if (!apiBaseUrl || activeTool !== 'notifications') return;
-    let cancelled = false;
-    void fetch(`${apiBaseUrl}/api/notifications`)
-      .then((response) => (response.ok ? response.json() : []))
-      .then((items) => {
-        if (!cancelled) setNotifications(items);
-      })
-      .catch(() => {
-        if (!cancelled) setNotifications([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTool, apiBaseUrl]);
-
-  const navigateTo = (path: string) => {
-    navigate(path);
-    onRouteChange?.(path);
-  };
-
-  const emitWorkspaceAction = (action: 'load-sample' | 'start' | 'focus-export') => {
-    if (activePath !== '/workspace') {
-      navigate({ pathname: '/workspace', hash: `#${action}` });
-      onRouteChange?.('/workspace');
-      return;
-    }
-
-    window.dispatchEvent(new CustomEvent(`workspace:${action}`));
-  };
-
-  const shellClassName = [
-    'app-shell',
-    showsContextPanel ? 'app-shell-with-context' : 'app-shell-no-context',
-    showsContextPanel && contextCollapsed ? 'app-shell-context-collapsed' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const { activeTask } = useWorkbenchShell();
+  const authUser = currentAuthUser();
+  const inWorkspace = location.pathname.startsWith('/workspace');
+  const currentRoute =
+    allRoutes.find((route) => (route.match ? route.match(location.pathname) : route.path === location.pathname)) ??
+    allRoutes[0];
+  const continuePath = resolveWorkspacePath(String(activeTask.snapshot?.phase || ''));
+  const hasDataSource = Boolean(activeTask.dataSource);
+  const nextHint = !hasDataSource
+    ? '先接入数据源'
+    : activeTask.snapshot.phase === 'idle'
+      ? '准备分析需求'
+      : activeTask.snapshot.phase === 'running'
+        ? '查看执行进度'
+        : '查看报告交付';
 
   return (
-    <div className={shellClassName}>
-      <aside className="sidebar">
+    <div className="app-shell app-shell-ops">
+      <aside className="sidebar sidebar-ops">
         <div className="brand-block">
           <span className="brand-mark">MA</span>
-          <h1 className="app-title">多 Agent 数据分析工作台</h1>
+          <div>
+            <h1 className="app-title">多 Agent 数据分析</h1>
+            <p className="sidebar-brand-sub">数据 → 分析 → 交付</p>
+          </div>
         </div>
-        <div className="sidebar-intro">
-          <span className="context-label">工作流状态</span>
-          <strong>{activeTask.status}</strong>
-          <p>{currentRoute.title}</p>
-        </div>
-        <nav className="sidebar-nav" aria-label="主导航">
-          {Object.entries(routeMeta).map(([path, meta]) => (
-            <button
-              key={path}
-              className={`sidebar-link${activePath === path ? ' active' : ''}`}
-              type="button"
-              aria-current={activePath === path ? 'page' : undefined}
-              onClick={() => navigateTo(path)}
-            >
-              <span className="sidebar-link-icon" aria-hidden="true">
-                {meta.icon}
-              </span>
-              <span>{meta.label}</span>
-            </button>
+
+        <button className="sidebar-primary-cta" type="button" onClick={() => navigate(continuePath)}>
+          <span>继续当前分析</span>
+          <small>{nextHint}</small>
+        </button>
+
+        <nav className="sidebar-nav-ops" aria-label="主导航">
+          {navGroups.map((group) => (
+            <section key={group.title} className="sidebar-nav-group">
+              <p className="sidebar-nav-group-title">{group.title}</p>
+              <div className="sidebar-nav-group-list">
+                {group.items.map((route) => {
+                  const isActive = route.match
+                    ? route.match(location.pathname)
+                    : location.pathname === route.path;
+                  return (
+                    <NavLink
+                      key={route.path}
+                      to={route.path === '/workspace' ? continuePath : route.path}
+                      className={`sidebar-link-ops${isActive ? ' active' : ''}`}
+                      aria-current={isActive ? 'page' : undefined}
+                    >
+                      <span className="sidebar-link-icon" aria-hidden="true">
+                        {route.icon}
+                      </span>
+                      <span>{route.label}</span>
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </section>
           ))}
         </nav>
+
+        <section className="sidebar-task-card sidebar-task-card-ops" aria-label="当前任务概览">
+          <div className="sidebar-task-head">
+            <span>当前任务</span>
+            <em>{activeTask.status}</em>
+          </div>
+          <strong>{activeTask.name}</strong>
+          {activeTask.dataSource ? (
+            <small>数据源：{activeTask.dataSource.fileName}</small>
+          ) : (
+            <small className="sidebar-task-warn">尚未绑定数据源</small>
+          )}
+          <div className="sidebar-task-actions">
+            <button type="button" onClick={() => navigate('/data-sources')}>
+              数据源
+            </button>
+            <button type="button" onClick={() => navigate(continuePath)}>
+              进入工作台
+            </button>
+          </div>
+          <small className="sidebar-user-line">
+            {authUser ? `${authUser.username} · ${roleLabel(authUser.role)}` : '本地模式'}
+          </small>
+        </section>
       </aside>
-      <main className="main-panel">
-        <header className="topbar">
+
+      <main className="main-panel main-panel-ops">
+        <header className="topbar topbar-ops">
           <div className="topbar-copy">
-            <p className="eyebrow">任务工作区</p>
             <div className="breadcrumb-row">
-              <span>{`任务工作区 / ${currentRoute.crumb} / ${currentRoute.title}`}</span>
+              <span>{currentRoute.label}</span>
+              {inWorkspace ? <span className="breadcrumb-sep">/</span> : null}
+              {inWorkspace ? <span>三步向导</span> : null}
             </div>
-            <h2 className="panel-title">{currentRoute.title}</h2>
+            <h2 className="panel-title">{inWorkspace ? '分析工作台' : currentRoute.title}</h2>
           </div>
-          <div className="topbar-tools" aria-label="全局工具">
-            <label className="topbar-context-select">
-              <span className="sr-only">全局任务上下文</span>
-              <select aria-label="全局任务上下文" defaultValue={activeTask.id}>
-                <option value={activeTask.id}>{activeTask.name}</option>
-                <option value="east-china-sales-report">华东销售月报</option>
-                <option value="channel-roi-review">渠道投放复盘</option>
-              </select>
-            </label>
-            <label className="topbar-search">
-              <span className="sr-only">全局搜索</span>
-              <input
-                type="search"
-                placeholder="搜索任务、数据集、报告"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
-              {searchQuery ? (
-                <div className="topbar-popover">
-                  {apiSearchResults.length > 0 ? (
-                    apiSearchResults.map((item) => (
-                      <button key={`${item.kind}-${item.id}`} type="button" onClick={() => goToSearchResult(item.kind)}>
-                        {item.name}
-                      </button>
-                    ))
-                  ) : searchResults.length > 0 ? (
-                    searchResults.map(([path, meta]) => (
-                      <button key={path} type="button" onClick={() => navigateTo(path)}>
-                        {meta.label}
-                      </button>
-                    ))
-                  ) : (
-                    <span>没有匹配结果</span>
-                  )}
-                </div>
-              ) : null}
-            </label>
-            <button
-              className="tool-button"
-              type="button"
-              aria-label="消息通知"
-              onClick={() => setActiveTool((current) => (current === 'notifications' ? null : 'notifications'))}
-            >
-              通知
+
+          <div className="topbar-ops-actions">
+            <button className="tool-button" type="button" onClick={() => navigate('/data-sources')}>
+              数据源
             </button>
-            <button
-              className="tool-button"
-              type="button"
-              aria-label="帮助中心"
-              onClick={() => setActiveTool((current) => (current === 'help' ? null : 'help'))}
-            >
-              帮助
+            <button className="action-button" type="button" onClick={() => navigate(continuePath)}>
+              继续分析
             </button>
-            {activeTool ? (
-              <div className="topbar-popover topbar-tool-popover">
-                {activeTool === 'notifications' ? (
-                  <>
-                    <strong>消息通知</strong>
-                    {(notifications.length > 0 ? notifications : [{ id: 'local', message: runningNode ? `${runningNode.label} 正在执行` : '暂无新的任务告警', level: 'info' }]).map(
-                      (item) => (
-                        <span key={item.id}>{item.message}</span>
-                      ),
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <strong>帮助中心</strong>
-                    <button type="button" onClick={() => navigateTo('/workspace')}>
-                      查看主流程
-                    </button>
-                    <button type="button" onClick={() => navigateTo('/workflow-designer')}>
-                      查看工作流画布
-                    </button>
-                  </>
-                )}
-              </div>
-            ) : null}
-          </div>
-          <div className="topbar-task-meta">
-            <strong>{activeTask.name}</strong>
-            <span>{activeTask.status}</span>
           </div>
         </header>
-        {showsContextPanel ? (
-          <section className="dashboard-strip" aria-label="平台运行概览">
-            <div className="metric-card metric-card-blue">
-              <span>在线 Agent</span>
-              <strong>{activeTask.snapshot.nodes.length}</strong>
+
+        {!hasDataSource &&
+        !location.pathname.startsWith('/data-sources') &&
+        !location.pathname.startsWith('/settings') ? (
+          <div className="ops-guide-banner">
+            <div>
+              <strong>建议操作路径</strong>
+              <p>数据源 → 分析工作台（输入）→ 执行 → 报告交付。当前还没有绑定数据源。</p>
             </div>
-            <div className="metric-card metric-card-green">
-              <span>已完成节点</span>
-              <strong>{finishedNodes}</strong>
-            </div>
-            <div className="metric-card metric-card-amber">
-              <span>当前节点</span>
-              <strong>{runningNode?.label ?? '等待启动'}</strong>
-            </div>
-            <div className="metric-card metric-card-red">
-              <span>风险提示</span>
-              <strong>{activeTask.risks.length}</strong>
-            </div>
-          </section>
-        ) : null}
-        {showsWorkspaceActions ? (
-          <div className="quick-actions-bar" aria-label="快捷操作">
-            <button
-              className="action-button action-button-primary"
-              type="button"
-              aria-label="加载示例数据"
-              onClick={() => emitWorkspaceAction('load-sample')}
-            >
-              加载示例数据
-              <span className="shortcut-hint">Alt+S</span>
-            </button>
-            <button
-              className="action-button secondary-button"
-              type="button"
-              aria-label="启动任务"
-              onClick={() => emitWorkspaceAction('start')}
-            >
-              启动任务
-              <span className="shortcut-hint">Alt+R</span>
-            </button>
-            <button
-              className="action-button secondary-button"
-              type="button"
-              aria-label="导出结果"
-              onClick={() => emitWorkspaceAction('focus-export')}
-            >
-              导出结果
-              <span className="shortcut-hint">Alt+E</span>
-            </button>
-            <button
-              className="panel-toggle-button"
-              type="button"
-              aria-expanded={!contextCollapsed}
-              aria-controls="context-panel"
-              onClick={() => setContextCollapsed((current) => !current)}
-            >
-              {contextCollapsed ? '展开上下文面板' : '收起上下文面板'}
+            <button className="action-button" type="button" onClick={() => navigate('/data-sources')}>
+              去接入数据
             </button>
           </div>
         ) : null}
-        <div key={activePath}>{children}</div>
+
+        {children}
       </main>
-      {showsContextPanel ? (
-        <ContextPanel
-          collapsed={contextCollapsed}
-          context={context}
-          activeTask={activeTask}
-          focusedNodeId={focusedNodeId}
-          onToggle={() => setContextCollapsed((current) => !current)}
-        />
-      ) : null}
     </div>
   );
 }

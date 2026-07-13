@@ -12,6 +12,7 @@ type RequirementComposerProps = {
     dimensions: string;
     charts: string;
   }) => void;
+  readOnly?: boolean;
 };
 
 function RequirementComposer({
@@ -20,6 +21,7 @@ function RequirementComposer({
   defaultDimensions = '月份、区域、渠道',
   onDraftChange,
   onParse,
+  readOnly = false,
 }: RequirementComposerProps) {
   const [value, setValue] = useState(initialValue);
   const [showExample, setShowExample] = useState(false);
@@ -44,7 +46,7 @@ function RequirementComposer({
   };
 
   return (
-    <section className="content-card workspace-section">
+    <section className="content-card workspace-section" id="requirement-composer">
       <div className="section-heading">
         <span className="section-index">02</span>
         <div>
@@ -60,15 +62,17 @@ function RequirementComposer({
         className="text-input text-area"
         value={value}
         onChange={(event) => handleChange(event.target.value)}
+        disabled={readOnly}
       />
       <div className="actions-row">
-        <button className="action-button" type="button" onClick={handleParse}>
+        <button className="action-button" type="button" onClick={handleParse} disabled={readOnly}>
           解析意图
         </button>
         <button className="action-button secondary-button" type="button" onClick={() => setShowExample((current) => !current)}>
           解析示例
         </button>
       </div>
+      {readOnly ? <p className="status-note">当前角色为只读，无法解析或修改需求。</p> : null}
       {showExample ? (
         <div className="preview-card example-card">
           <h4>自然语言到结构化意图示例</h4>

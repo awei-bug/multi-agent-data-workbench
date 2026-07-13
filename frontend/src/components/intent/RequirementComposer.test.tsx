@@ -1,44 +1,88 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, expect, it, vi } from 'vitest';
 
+import { WorkbenchShellContext } from '../../context/WorkbenchShellContext';
 import WorkspacePage from '../../pages/WorkspacePage';
+import { createEmptyTask } from '../../pages/emptyTask';
+import { defaultWorkbenchContext } from '../../types/workbench';
 
-describe('workspace source and intent steps', () => {
-  it('shows parsed analysis intent after submitting a requirement', async () => {
+describe('workspace intent parsing', () => {
+  it('shows server-derived analysis intent for an attached dataset', async () => {
     const user = userEvent.setup();
+    const task = {
+      ...createEmptyTask(),
+      dataSource: {
+        kind: 'table' as const,
+        fileName: 'sales.csv',
+        columnCount: 2,
+        rowCount: 2,
+        columns: [
+          { name: 'region', type: 'string' },
+          { name: 'sales', type: 'number' },
+        ],
+        previewRows: [],
+        analysisRows: [],
+        fieldMappings: [],
+      },
+    };
 
-    render(<WorkspacePage />);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/intent/parse')) {
+        return new Response(
+          JSON.stringify({
+            request: '分析销售趋势',
+            goal: '销售趋势复盘',
+            metrics: 'sales',
+            dimensions: 'region',
+            charts: '排名柱状图',
+          }),
+          { status: 200 },
+        );
+      }
 
-    await user.click(screen.getByRole('button', { name: '需求确认' }));
-    await user.type(screen.getByLabelText('分析需求'), '分析 2025 年月度销售额趋势并输出报告');
-    await user.click(screen.getByRole('button', { name: '解析意图' }));
-
-    expect(screen.getByText('分析目标')).toBeInTheDocument();
-    expect(screen.getByText('模拟意图摘要')).toBeInTheDocument();
-    expect(screen.getByText('销售额')).toBeInTheDocument();
-  });
-
-  it('uses confirmed csv field mappings in parsed intent metrics and dimensions', async () => {
-    const user = userEvent.setup();
-
-    render(<WorkspacePage />);
-
-    const file = new File(['month,region,sales\n2025-04,华中,4100\n2025-05,华北,3900'], 'sales.csv', {
-      type: 'text/csv',
+      return new Response(
+        JSON.stringify({
+          ...task,
+          name: '销售趋势复盘',
+          request: '分析销售趋势',
+          intent: {
+            request: '分析销售趋势',
+            goal: '销售趋势复盘',
+            metrics: 'sales',
+            dimensions: 'region',
+            charts: '排名柱状图',
+          },
+        }),
+        { status: 200 },
+      );
     });
 
-    await user.upload(screen.getByLabelText('上传 CSV'), file);
-    await user.click(await screen.findByRole('button', { name: '确认字段映射' }));
-    await user.click(screen.getByRole('button', { name: '需求确认' }));
-    await user.type(screen.getByLabelText('分析需求'), '分析销售趋势并输出报告');
+    render(
+      <MemoryRouter initialEntries={['/workspace?step=input']}>
+        <WorkbenchShellContext.Provider
+          value={{
+            context: defaultWorkbenchContext,
+            setContext: () => undefined,
+            activeTask: task,
+            setActiveTask: (next) => Object.assign(task, next),
+          }}
+        >
+          <WorkspacePage />
+        </WorkbenchShellContext.Provider>
+      </MemoryRouter>,
+    );
+
+    await user.type(screen.getByLabelText('分析需求'), '分析销售趋势');
     await user.click(screen.getByRole('button', { name: '解析意图' }));
 
-    const summarySection = screen.getByRole('heading', { level: 3, name: '意图摘要' }).closest('section') as HTMLElement;
-    expect(summarySection).not.toBeNull();
-    expect(screen.getByText('核心指标')).toBeInTheDocument();
-    expect(summarySection).toHaveTextContent('销售额');
-    expect(screen.getByText('分析维度')).toBeInTheDocument();
-    expect(summarySection).toHaveTextContent('月份、区域');
+    expect(fetchMock).toHaveBeenCalledWith('/api/intent/parse', expect.objectContaining({ method: 'POST' }));
+    // After successful parse, wizard advances to execution step.
+    expect(await screen.findByText('运行监控')).toBeInTheDocument();
+    expect(task.name).toBe('销售趋势复盘');
+    expect(task.intent?.goal).toBe('销售趋势复盘');
+    fetchMock.mockRestore();
   });
 });

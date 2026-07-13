@@ -4,9 +4,17 @@ type ExportCenterProps = {
   status: string;
   onExport: (record: ExportRecord) => void;
   onSaveTemplate?: () => void;
+  readOnly?: boolean;
+  canManageTemplates?: boolean;
 };
 
-function ExportCenter({ status, onExport, onSaveTemplate }: ExportCenterProps) {
+function ExportCenter({
+  status,
+  onExport,
+  onSaveTemplate,
+  readOnly = false,
+  canManageTemplates = true,
+}: ExportCenterProps) {
   return (
     <section className="content-card workspace-section" id="export-center">
       <div className="section-heading">
@@ -31,23 +39,26 @@ function ExportCenter({ status, onExport, onSaveTemplate }: ExportCenterProps) {
         </div>
       </div>
       <div className="actions-row">
-        <button className="action-button" type="button" onClick={() => onExport({ format: 'PDF', status: 'PDF 导出完成' })}>
+        <button className="action-button" type="button" disabled={readOnly} onClick={() => onExport({ format: 'PDF', status: 'PDF 导出完成' })}>
           导出 PDF
         </button>
-        <button className="action-button secondary-button" type="button" onClick={() => onExport({ format: 'Word', status: 'Word 导出完成' })}>
+        <button className="action-button secondary-button" type="button" disabled={readOnly} onClick={() => onExport({ format: 'Word', status: 'Word 导出完成' })}>
           导出 Word
         </button>
         <button
           className="action-button secondary-button"
           type="button"
+          disabled={readOnly}
           onClick={() => onExport({ format: 'Markdown', status: 'Markdown 导出完成' })}
         >
           导出 Markdown
         </button>
-        <button className="action-button secondary-button" type="button" onClick={onSaveTemplate}>
+        <button className="action-button secondary-button" type="button" disabled={readOnly || !canManageTemplates} onClick={onSaveTemplate}>
           保存为模板
         </button>
       </div>
+      {readOnly ? <p className="status-note">当前角色为只读，无法导出或保存模板。</p> : null}
+      {!readOnly && !canManageTemplates ? <p className="status-note">保存模板需要管理员权限。</p> : null}
       <div className="log-card context-block-log-success">
         <strong>最新导出状态</strong>
         <p>{status}</p>

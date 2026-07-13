@@ -11,7 +11,6 @@ import {
 import { DEFAULT_EXPORT_STATUS, DEFAULT_SUMMARY } from './workspaceSessionCopy';
 import { getComposerValue } from './workspaceSessionController';
 import { createWorkspaceSessionAsyncBridge } from './workspaceSessionAsyncBridge';
-import { buildSampleDataContext } from './workspaceSampleData';
 import type { ActiveTaskUpdate } from './apiWorkspaceSessionRuntime';
 
 type ParsedIntent = {
@@ -118,18 +117,6 @@ export function useAsyncWorkspaceSession(options: UseAsyncWorkspaceSessionOption
     return updateActiveTask({ summary: nextSummary });
   };
 
-  const handleLoadSampleData = async () => {
-    const nextSnapshot = {
-      ...activeTask.snapshot,
-      context: buildSampleDataContext(activeTask.snapshot.context),
-    };
-
-    return updateActiveTask({
-      snapshot: nextSnapshot,
-      risks: nextSnapshot.context.risks,
-    });
-  };
-
   const handleParse = async (nextIntent: Exclude<ParsedIntent, null>) => {
     const resolvedIntent = options.runtime.parseIntent ? await options.runtime.parseIntent(nextIntent.request) : nextIntent;
 
@@ -199,7 +186,6 @@ export function useAsyncWorkspaceSession(options: UseAsyncWorkspaceSessionOption
     reportSummary,
     handleChartTitleChange,
     handleExport,
-    handleLoadSampleData,
     handleManualRevision,
     handleParse,
     handleReportSummaryChange,

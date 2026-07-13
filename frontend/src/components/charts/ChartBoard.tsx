@@ -1,217 +1,311 @@
 import { useEffect, useRef, useState } from 'react';
-import { BarChart, HeatmapChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
-import {
-  DataZoomComponent,
-  GridComponent,
-  LegendComponent,
-  RadarComponent,
-  TitleComponent,
-  TooltipComponent,
-  VisualMapComponent,
-} from 'echarts/components';
+import { BarChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
+import { GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent } from 'echarts/components';
+import type { EChartsOption } from 'echarts';
 import { init, use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import type { EChartsOption } from 'echarts';
+
+import type { TaskArtifactRecord, TaskDataSourceRecord } from '../../types/tasks';
+import { aggregateComparisonRows, getAnalysisRows, getNumericFields, parseNumericValue, type ComparisonPoint } from '../../utils/dataAnalysis';
 
 type ChartBoardProps = {
+  dataSource?: TaskDataSourceRecord;
+  metricArtifact?: TaskArtifactRecord;
+  chartArtifact?: TaskArtifactRecord;
   onTitleChange: (title: string) => void;
 };
 
-use([
-  BarChart,
-  HeatmapChart,
-  LineChart,
-  PieChart,
-  RadarChart,
-  ScatterChart,
-  CanvasRenderer,
-  DataZoomComponent,
-  GridComponent,
-  LegendComponent,
-  RadarComponent,
-  TitleComponent,
-  TooltipComponent,
-  VisualMapComponent,
-]);
+type ChartType = 'bar' | 'pie' | 'line' | 'scatter' | 'radar';
+type DocumentKeyword = { name: string; value: number };
 
-const chartTypes = ['折线图', '柱状图', '面积图', '饼图', '环形图', '散点图', '雷达图', '热力图'] as const;
-type ChartType = (typeof chartTypes)[number];
+use([BarChart, LineChart, PieChart, RadarChart, ScatterChart, CanvasRenderer, GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent]);
 
-const months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
-const regions = ['华东', '华北', '华南'];
-const salesByRegion = {
-  华东: [382, 426, 458, 492, 531, 568, 568, 584, 596, 612, 629, 654],
-  华北: [318, 336, 352, 374, 389, 421, 421, 438, 447, 455, 463, 482],
-  华南: [286, 309, 342, 361, 394, 438, 452, 466, 486, 521, 548, 596],
-};
+function formatValue(value: number) {
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value);
+}
 
-function buildChartOption(title: string, chartType: ChartType): EChartsOption {
-  const totalByRegion = regions.map((region) => ({
-    name: region,
-    value: salesByRegion[region as keyof typeof salesByRegion].reduce((sum, value) => sum + value, 0),
-  }));
+function normalize(value: number, max: number) {
+  return max > 0 ? Number(((value / max) * 100).toFixed(2)) : 0;
+}
 
-  if (chartType === '饼图' || chartType === '环形图') {
-    return {
-      title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
-      tooltip: { trigger: 'item' },
-      legend: { bottom: 0 },
-      series: [
-        {
-          type: 'pie',
-          radius: chartType === '环形图' ? ['42%', '68%'] : '68%',
-          center: ['50%', '50%'],
-          data: totalByRegion,
-        },
-      ],
-    };
-  }
-
-  if (chartType === '散点图') {
-    return {
-      title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
-      tooltip: { trigger: 'item' },
-      grid: { left: 44, right: 24, top: 56, bottom: 54 },
-      xAxis: { type: 'category', data: months },
-      yAxis: { type: 'value' },
-      dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18 }],
-      series: regions.map((region) => ({
-        name: region,
-        type: 'scatter',
-        symbolSize: 12,
-        data: salesByRegion[region as keyof typeof salesByRegion],
-      })),
-    };
-  }
-
-  if (chartType === '雷达图') {
-    return {
-      title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
-      tooltip: {},
-      legend: { bottom: 0 },
-      radar: {
-        radius: '58%',
-        indicator: months.map((month) => ({ name: month, max: 700 })),
-      },
-      series: [
-        {
-          type: 'radar',
-          data: regions.map((region) => ({
-            name: region,
-            value: salesByRegion[region as keyof typeof salesByRegion],
-          })),
-        },
-      ],
-    };
-  }
-
-  if (chartType === '热力图') {
-    return {
-      title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
-      tooltip: { position: 'top' },
-      grid: { left: 52, right: 24, top: 56, bottom: 42 },
-      xAxis: { type: 'category', data: months },
-      yAxis: { type: 'category', data: regions },
-      visualMap: { min: 280, max: 700, orient: 'horizontal', left: 'center', bottom: 0 },
-      series: [
-        {
-          type: 'heatmap',
-          data: regions.flatMap((region, regionIndex) =>
-            salesByRegion[region as keyof typeof salesByRegion].map((value, monthIndex) => [monthIndex, regionIndex, value]),
-          ),
-        },
-      ],
-    };
-  }
-
-  const lineType = chartType === '柱状图' ? 'bar' : 'line';
+function buildRankingOption(title: string, metric: string, points: ComparisonPoint[]): EChartsOption {
+  const sorted = [...points].sort((left, right) => right.value - left.value).slice(0, 12).reverse();
   return {
     title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
     tooltip: { trigger: 'axis' },
-    legend: { top: 30 },
-    grid: { left: 44, right: 24, top: 72, bottom: 54 },
-    xAxis: { type: 'category', data: months },
-    yAxis: { type: 'value' },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18 }],
-    series: regions.map((region) => ({
-      name: region,
-      type: lineType,
-      smooth: chartType !== '柱状图',
-      areaStyle: chartType === '面积图' ? {} : undefined,
-      data: salesByRegion[region as keyof typeof salesByRegion],
-    })),
+    grid: { left: 120, right: 28, top: 58, bottom: 28 },
+    xAxis: { type: 'value', name: metric },
+    yAxis: { type: 'category', data: sorted.map((point) => point.name) },
+    series: [{ type: 'bar', data: sorted.map((point) => point.value), itemStyle: { borderRadius: [0, 8, 8, 0] } }],
   };
 }
 
-function ChartBoard({ onTitleChange }: ChartBoardProps) {
+function buildShareOption(metric: string, points: ComparisonPoint[]): EChartsOption {
+  const sorted = [...points].sort((left, right) => right.value - left.value);
+  const top = sorted.slice(0, 8);
+  const other = sorted.slice(8).reduce((sum, point) => sum + point.value, 0);
+  const data = other > 0 ? [...top, { name: '其他', value: other }] : top;
+  return {
+    title: { text: `${metric} 占比`, left: 12, top: 8, textStyle: { fontSize: 15 } },
+    tooltip: { trigger: 'item' },
+    legend: { type: 'scroll', bottom: 0 },
+    series: [{ type: 'pie', radius: ['42%', '72%'], center: ['50%', '48%'], data }],
+  };
+}
+
+function buildTrendOption(title: string, metric: string, points: ComparisonPoint[]): EChartsOption {
+  return {
+    title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 44, right: 28, top: 58, bottom: 28 },
+    xAxis: { type: 'category', data: points.map((point) => point.name) },
+    yAxis: { type: 'value', name: metric },
+    series: [{ type: 'line', smooth: true, data: points.map((point) => point.value) }],
+  };
+}
+
+function buildScatterOption(rows: ReturnType<typeof getAnalysisRows>, dimension: string, xMetric: string, yMetric: string): EChartsOption {
+  const scatterRows = rows
+    .map((row) => ({
+      name: row[dimension] || '未命名',
+      value: [parseNumericValue(row[xMetric]), parseNumericValue(row[yMetric])],
+    }))
+    .filter((item) => Number.isFinite(item.value[0]) && Number.isFinite(item.value[1]));
+
+  return {
+    title: { text: `${xMetric} / ${yMetric} 相关分布`, left: 12, top: 8, textStyle: { fontSize: 15 } },
+    tooltip: {
+      trigger: 'item',
+      formatter: ((params: { name?: string; value?: unknown }) => {
+        const value = Array.isArray(params.value) ? params.value : [0, 0];
+        return `${params.name ?? '未命名'}<br/>${xMetric}: ${formatValue(Number(value[0] ?? 0))}<br/>${yMetric}: ${formatValue(Number(value[1] ?? 0))}`;
+      }) as never,
+    },
+    grid: { left: 56, right: 28, top: 58, bottom: 48 },
+    xAxis: { type: 'value', name: xMetric },
+    yAxis: { type: 'value', name: yMetric },
+    series: [{ type: 'scatter', symbolSize: 18, data: scatterRows }],
+  };
+}
+
+function buildRadarOption(rows: ReturnType<typeof getAnalysisRows>, dimension: string, metrics: string[], baseMetric: string): EChartsOption {
+  const rankedRows = [...rows]
+    .map((row) => ({ row, value: parseNumericValue(row[baseMetric]) }))
+    .filter((item) => Number.isFinite(item.value))
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 5);
+  const maxByMetric = metrics.map((metric) => Math.max(...rows.map((row) => parseNumericValue(row[metric])).filter(Number.isFinite), 0));
+
+  return {
+    title: { text: '多指标能力对比', left: 12, top: 8, textStyle: { fontSize: 15 } },
+    tooltip: {},
+    legend: { bottom: 0 },
+    radar: { radius: '62%', indicator: metrics.map((metric) => ({ name: metric, max: 100 })) },
+    series: [{
+      type: 'radar',
+      data: rankedRows.map(({ row }) => ({
+        name: row[dimension] || '未命名',
+        value: metrics.map((metric, index) => normalize(parseNumericValue(row[metric]), maxByMetric[index])),
+      })),
+    }],
+  };
+}
+
+function buildDocumentKeywordOption(title: string, points: DocumentKeyword[]): EChartsOption {
+  const sorted = [...points].sort((left, right) => right.value - left.value).slice(0, 12).reverse();
+  return {
+    title: { text: title, left: 12, top: 8, textStyle: { fontSize: 15 } },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 120, right: 28, top: 58, bottom: 28 },
+    xAxis: { type: 'value', name: '出现次数' },
+    yAxis: { type: 'category', data: sorted.map((point) => point.name) },
+    series: [{ type: 'bar', data: sorted.map((point) => point.value), itemStyle: { borderRadius: [0, 8, 8, 0] } }],
+  };
+}
+
+function buildDocumentEvidenceOption(points: DocumentKeyword[]): EChartsOption {
+  const top = [...points].sort((left, right) => right.value - left.value).slice(0, 8);
+  return {
+    title: { text: '主题占比', left: 12, top: 8, textStyle: { fontSize: 15 } },
+    tooltip: { trigger: 'item' },
+    legend: { type: 'scroll', bottom: 0 },
+    series: [{ type: 'pie', radius: ['42%', '72%'], center: ['50%', '48%'], data: top }],
+  };
+}
+
+function ChartBoard({ dataSource, metricArtifact, chartArtifact, onTitleChange }: ChartBoardProps) {
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const [title, setTitle] = useState('销售趋势总览');
-  const [chartType, setChartType] = useState<ChartType>('折线图');
+  const [title, setTitle] = useState('核心指标排名');
+  const rows = getAnalysisRows(dataSource);
+  const fields = dataSource?.columns?.map((column) => column.name) ?? [];
+  const numericFields = dataSource ? getNumericFields(dataSource, rows) : [];
+  const [dimension, setDimension] = useState('');
+  const [metric, setMetric] = useState('');
+  const [secondaryMetric, setSecondaryMetric] = useState('');
+  const [selectedChart, setSelectedChart] = useState<ChartType | null>(null);
+  const serverGroups = Array.isArray(metricArtifact?.content?.groups)
+    ? (metricArtifact?.content?.groups as Array<Record<string, unknown>>)
+    : Array.isArray(chartArtifact?.content?.series)
+      ? (chartArtifact?.content?.series as Array<Record<string, unknown>>)
+      : [];
+  const isDocumentMode = dataSource?.kind === 'document' || String(metricArtifact?.content?.analysisMode ?? chartArtifact?.content?.analysisMode ?? '') === 'document';
+  const serverPoints: ComparisonPoint[] = serverGroups
+    .map((item) => ({ name: String(item.name ?? '未命名'), value: Number(item.value ?? 0) }))
+    .filter((item) => Number.isFinite(item.value));
 
   useEffect(() => {
-    if (!chartRef.current) {
-      return;
-    }
+    const nextMetric = String(metricArtifact?.content?.metric ?? chartArtifact?.content?.metric ?? numericFields[0] ?? '');
+    const nextDimension = String(metricArtifact?.content?.dimension ?? chartArtifact?.content?.dimension ?? fields.find((field) => field !== nextMetric) ?? fields[0] ?? '');
+    const nextSecondaryMetric = numericFields.find((field) => field !== nextMetric) ?? nextMetric;
+    setMetric(nextMetric);
+    setDimension(nextDimension);
+    setSecondaryMetric(nextSecondaryMetric);
+    setSelectedChart(serverPoints.length > 0 ? 'bar' : isDocumentMode ? 'bar' : null);
+    if (chartArtifact?.content?.title) setTitle(String(chartArtifact.content.title));
+  }, [dataSource?.fileName, metricArtifact, chartArtifact]);
+
+  const localPoints = dimension && metric ? aggregateComparisonRows(rows, dimension, metric) : [];
+  const points = serverPoints.length > 0 ? serverPoints : localPoints;
+  const rankedPoints = [...points].sort((left, right) => right.value - left.value);
+  const radarMetrics = numericFields.slice(0, 5);
+  const top = rankedPoints[0];
+  const bottom = rankedPoints[rankedPoints.length - 1];
+  const total = rankedPoints.reduce((sum, point) => sum + point.value, 0);
+  const topThreeShare = total ? rankedPoints.slice(0, 3).reduce((sum, point) => sum + point.value, 0) / total : 0;
+
+  const chartOptions: Array<{ type: ChartType; label: string; description: string; disabled?: boolean }> = isDocumentMode
+    ? [
+        { type: 'bar', label: '主题词频图', description: '看文档主题词出现频次' },
+        { type: 'pie', label: '主题占比图', description: '看主题词占比' },
+      ]
+    : [
+        { type: 'bar', label: '排名柱状图', description: '看分类排名和差距' },
+        { type: 'pie', label: '占比环图', description: '看各分类贡献占比' },
+        { type: 'line', label: '趋势折线图', description: '看分类顺序上的变化' },
+        { type: 'scatter', label: '散点图', description: '看两个数值指标的关系', disabled: numericFields.length < 2 },
+        { type: 'radar', label: '雷达图', description: '看多指标能力对比', disabled: radarMetrics.length < 2 },
+      ];
+
+  const handleTitleChange = (value: string) => {
+    setTitle(value);
+    onTitleChange(value);
+  };
+
+  useEffect(() => {
+    if (!chartRef.current || points.length === 0 || !selectedChart) return;
 
     const chart = init(chartRef.current);
-    chart.setOption(buildChartOption(title, chartType));
+    const option =
+      isDocumentMode && selectedChart === 'bar'
+        ? buildDocumentKeywordOption(title || '文档主题词频', rankedPoints)
+        : isDocumentMode && selectedChart === 'pie'
+          ? buildDocumentEvidenceOption(rankedPoints)
+          : selectedChart === 'bar'
+            ? buildRankingOption(title, metric, rankedPoints)
+            : selectedChart === 'pie'
+              ? buildShareOption(metric, rankedPoints)
+              : selectedChart === 'line'
+                ? buildTrendOption(title, metric, points)
+                : selectedChart === 'scatter'
+                  ? buildScatterOption(rows, dimension, metric, secondaryMetric)
+                  : buildRadarOption(rows, dimension, radarMetrics, metric);
+
+    chart.setOption(option);
     const resize = () => chart.resize();
-
     window.addEventListener('resize', resize);
-
     return () => {
       window.removeEventListener('resize', resize);
       chart.dispose();
     };
-  }, [chartType, title]);
+  }, [dimension, metric, points, radarMetrics.join('|'), rankedPoints, rows, secondaryMetric, selectedChart, title]);
 
-  const handleChange = (value: string) => {
-    setTitle(value);
-    onTitleChange(value);
-  };
+  if (!dataSource || (!isDocumentMode && (rows.length === 0 || numericFields.length === 0)) || (isDocumentMode && rankedPoints.length === 0)) {
+    return (
+      <section className="content-card workspace-section">
+        <div className="section-heading">
+          <span className="section-index">07</span>
+          <div>
+            <h3>数据图表中心</h3>
+            <p>{isDocumentMode ? '当前文档还没有提取出可分析主题。' : '上传包含分类列和数值列的数据后，这里会提供多种分析图表。'}</p>
+          </div>
+        </div>
+        <label className="field-label" htmlFor="chart-title">图表标题</label>
+        <input id="chart-title" className="text-input" value={title} onChange={(event) => handleTitleChange(event.target.value)} />
+        <p className="status-note">{isDocumentMode ? '请先执行文档分析流程。' : '当前数据源还没有可用于汇总的有效数值数据。'}</p>
+      </section>
+    );
+  }
 
   return (
     <section className="content-card workspace-section">
       <div className="section-heading">
         <span className="section-index">07</span>
         <div>
-          <h3>可视化看板</h3>
-          <p>切换基础图表形态，保留标题、悬停和缩放入口，先把可用性搭起来。</p>
+          <h3>数据图表中心</h3>
+          <p>{serverPoints.length > 0 ? `优先使用服务端指标结果：${metric || '指标'} / ${dimension || '维度'}` : `基于 ${dataSource.fileName} 的 ${rows.length} 条记录进行本地聚合分析。`}</p>
         </div>
       </div>
-      <label className="field-label" htmlFor="chart-title">
-        图表标题
-      </label>
-      <input id="chart-title" className="text-input" value={title} onChange={(event) => handleChange(event.target.value)} />
-      <div className="actions-row">
-        {chartTypes.map((type) => (
+
+      <div className="chart-command-board">
+        <div className="summary-grid">
+          <label className="field-label">
+            分类字段
+            <select className="text-input" value={dimension} onChange={(event) => setDimension(event.target.value)}>
+              {fields.map((field) => <option key={field} value={field}>{field}</option>)}
+            </select>
+          </label>
+          <label className="field-label">
+            数值字段
+            <select className="text-input" value={metric} onChange={(event) => setMetric(event.target.value)}>
+              {numericFields.map((field) => <option key={field} value={field}>{field}</option>)}
+            </select>
+          </label>
+          <label className="field-label">
+            对比字段
+            <select className="text-input" value={secondaryMetric} onChange={(event) => setSecondaryMetric(event.target.value)} disabled={numericFields.length < 2}>
+              {numericFields.map((field) => <option key={field} value={field}>{field}</option>)}
+            </select>
+          </label>
+        </div>
+        <label className="field-label" htmlFor="chart-title">图表标题</label>
+        <input id="chart-title" className="text-input" value={title} onChange={(event) => handleTitleChange(event.target.value)} />
+      </div>
+
+      <div className="summary-grid summary-grid-strong chart-insight-grid">
+        <div className="summary-card"><span>领先项</span><strong>{top ? `${top.name} / ${formatValue(top.value)}` : '无'}</strong></div>
+        <div className="summary-card"><span>首尾差距</span><strong>{top && bottom ? formatValue(top.value - bottom.value) : '无'}</strong></div>
+        <div className="summary-card"><span>前三集中度</span><strong>{`${(topThreeShare * 100).toFixed(1)}%`}</strong></div>
+        <div className="summary-card"><span>可比较指标</span><strong>{numericFields.length}</strong></div>
+      </div>
+
+      <div className="chart-type-grid">
+        {chartOptions.map((option) => (
           <button
-            className={`action-button ${chartType === type ? '' : 'secondary-button'}`}
+            key={option.type}
+            className={`summary-card chart-type-button${selectedChart === option.type ? ' active-tab-card' : ''}`}
             type="button"
-            key={type}
-            onClick={() => setChartType(type)}
+            disabled={option.disabled}
+            onClick={() => setSelectedChart(option.type)}
           >
-            {type}
+            <span>{option.label}</span>
+            <strong>{option.disabled ? '当前数据条件不足' : option.description}</strong>
           </button>
         ))}
       </div>
-      <div className="summary-grid chart-toolbar-grid">
-        <div className="summary-card">
-          <span>当前图表</span>
-          <strong>{chartType}</strong>
+
+      {!selectedChart ? <p className="status-note">先选择图表类型，再查看结果。</p> : null}
+
+      {selectedChart ? (
+        <div className="chart-preview chart-preview-strong">
+          <div ref={chartRef} className={`chart-canvas${selectedChart === 'bar' ? ' chart-canvas-large' : ''}`} aria-label="数据分析图表" />
+          <div className="chart-preview-footer">
+            <span>{`图表：${chartOptions.find((option) => option.type === selectedChart)?.label ?? ''}`}</span>
+            <span>{`分类：${dimension}`}</span>
+            <span>{`汇总：${metric}`}</span>
+            {selectedChart === 'scatter' ? <span>{`对比：${secondaryMetric}`}</span> : null}
+          </div>
         </div>
-        <div className="summary-card">
-          <span>交互能力</span>
-          <strong>悬停详情 / 缩放 / 类型切换</strong>
-        </div>
-      </div>
-      <div className="chart-preview chart-preview-strong">
-        <div ref={chartRef} className="chart-canvas" aria-label={`${chartType}预览`} />
-        <div className="chart-preview-footer">
-          <span>示例数据点：2025-01 华东 3,820</span>
-          <span>缩放范围：近 12 个月</span>
-        </div>
-      </div>
+      ) : null}
     </section>
   );
 }

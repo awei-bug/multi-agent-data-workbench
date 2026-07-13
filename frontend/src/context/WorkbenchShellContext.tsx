@@ -1,15 +1,14 @@
 import { createContext, useContext } from 'react';
 
 import { defaultWorkbenchContext, type WorkbenchShellContext as WorkbenchShellState } from '../types/workbench';
-import { createMockTaskRepository } from '../mock/mockTaskRepository';
+import { createEmptyTask } from '../pages/emptyTask';
 
 const noop = () => undefined;
-const repository = createMockTaskRepository();
 
 export const WorkbenchShellContext = createContext<WorkbenchShellState>({
   context: defaultWorkbenchContext,
   setContext: noop,
-  activeTask: repository.getActiveTask(),
+  activeTask: createEmptyTask(),
   setActiveTask: noop,
 });
 

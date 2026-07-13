@@ -42,10 +42,10 @@ describe('http workspace session transport', () => {
     const transport = createHttpWorkspaceSessionTransport({ baseUrl: 'http://localhost:8787' });
     const task = await transport.getActiveTask();
 
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8787/api/active-task', {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8787/api/active-task', expect.any(Object));
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(request.method).toBe('GET');
+    expect((request.headers as Headers).get('Content-Type')).toBe('application/json');
     expect(task).toEqual(mockTask);
   });
 
@@ -67,11 +67,11 @@ describe('http workspace session transport', () => {
     const transport = createHttpWorkspaceSessionTransport({ baseUrl: 'http://localhost:8787' });
     const task = await transport.workflowAction('start');
 
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8787/api/workflow/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'start' }),
-    });
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8787/api/workflow/action', expect.any(Object));
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(request.method).toBe('POST');
+    expect(request.body).toBe(JSON.stringify({ action: 'start' }));
+    expect((request.headers as Headers).get('Content-Type')).toBe('application/json');
     expect(task).toEqual(runningTask);
   });
 });

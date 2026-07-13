@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { createHttpWorkspaceSessionTransport } from '../api/httpWorkspaceSessionTransport';
 import ChartBoard from '../components/charts/ChartBoard';
 import DataSourceUploader from '../components/data/DataSourceUploader';
 import EditableDataGrid from '../components/data/EditableDataGrid';
@@ -11,7 +12,7 @@ import ExecutionTimeline from '../components/workflow/ExecutionTimeline';
 import WorkflowCanvas from '../components/workflow/WorkflowCanvas';
 import { createMockTaskRepository } from '../mock/mockTaskRepository';
 import type { WorkflowNode } from '../mock/mockTaskEngine';
-import { createHttpWorkspaceSessionTransport } from '../api/httpWorkspaceSessionTransport';
+import { workspaceFetch } from '../utils/workspaceIdentity';
 import { createApiWorkspaceSessionRuntime } from './apiWorkspaceSessionRuntime';
 import { buildSnapshotSessionState } from './workspaceSessionController';
 import { buildRunningTickUpdate, shouldStartRunningTimer } from './workspaceSessionEffects';
@@ -26,6 +27,36 @@ import {
   buildStopAction,
 } from './workspaceWorkflowActions';
 
+function getBridgeLabel(status: string) {
+  switch (status) {
+    case 'ready':
+      return '已连接';
+    case 'loading':
+      return '同步中';
+    case 'error':
+      return '异常';
+    default:
+      return status;
+  }
+}
+
+function getPhaseLabel(phase: string) {
+  switch (phase) {
+    case 'idle':
+      return '待启动';
+    case 'running':
+      return '执行中';
+    case 'paused':
+      return '已暂停';
+    case 'failed':
+      return '执行失败';
+    case 'completed':
+      return '已完成';
+    default:
+      return phase;
+  }
+}
+
 function AsyncWorkspacePage() {
   const runtime = useMemo(() => {
     const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
@@ -37,7 +68,7 @@ function AsyncWorkspacePage() {
         transport: {
           ...transport,
           async parseIntent(request) {
-            const response = await fetch(`${apiBaseUrl}/api/intent/parse`, {
+            const response = await workspaceFetch(`${apiBaseUrl}/api/intent/parse`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ request }),
@@ -86,9 +117,11 @@ function AsyncWorkspacePage() {
   }, []);
 
   const session = useAsyncWorkspaceSession({ runtime });
-  const [draftSummary, setDraftSummary] = useState('异步沙箱摘要');
+  const [draftSummary, setDraftSummary] = useState('异步工作台会话摘要');
   const snapshot = session.activeTask.snapshot;
   const runningNode = snapshot.nodes.find((node: WorkflowNode) => node.status === 'running') ?? null;
+  const completedNodes = snapshot.nodes.filter((node: WorkflowNode) => node.status === 'success').length;
+  const failedNodes = snapshot.nodes.filter((node: WorkflowNode) => node.status === 'failed').length;
 
   const updateWorkflowSnapshot = async (
     nextAction: ReturnType<
@@ -130,7 +163,7 @@ function AsyncWorkspacePage() {
       return;
     }
 
-    const response = await fetch(`${apiBaseUrl}/api/workflow/action`, {
+    const response = await workspaceFetch(`${apiBaseUrl}/api/workflow/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
@@ -161,7 +194,7 @@ function AsyncWorkspacePage() {
       }
 
       const timer = window.setInterval(() => {
-        void fetch(`${apiBaseUrl}/api/workflow/advance`, {
+        void workspaceFetch(`${apiBaseUrl}/api/workflow/advance`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         })
@@ -202,29 +235,61 @@ function AsyncWorkspacePage() {
 
   return (
     <div className="workspace-grid">
-      <DataSourceUploader onLoadSampleData={() => void session.handleLoadSampleData()} />
-      <section className="content-card workspace-section" aria-label="异步工作台沙箱">
+      <section className="enterprise-page-hero">
+        <span className="enterprise-page-kicker">异步工作台 / 联调沙箱</span>
+        <div className="enterprise-page-title-row">
+          <div>
+            <h3>异步会话联调中枢</h3>
+            <p>用于验证工作台与后端会话、Agent 执行链路、人工修订、报告编辑和导出之间的异步联动是否稳定，适合作为完整主流程的联调面板。</p>
+          </div>
+          <div className="enterprise-page-actions">
+            <button className="action-button" type="button" onClick={() => void session.loadActiveTask()}>
+              加载当前任务
+            </button>
+            <button className="action-button secondary-button" type="button" onClick={() => void session.saveActiveTaskToHistory()}>
+              保存到历史
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="enterprise-metric-strip">
+        <article className="enterprise-metric-card">
+          <span>桥接状态</span>
+          <strong>{getBridgeLabel(session.bridge.status)}</strong>
+          <small>{session.bridge.errorMessage ?? '当前桥接通道正常'}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>当前任务</span>
+          <strong>{session.activeTask.name}</strong>
+          <small>{session.activeTask.status}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>执行阶段</span>
+          <strong>{getPhaseLabel(snapshot.phase)}</strong>
+          <small>{runningNode?.label ?? '等待启动流程'}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>节点完成度</span>
+          <strong>{`${completedNodes}/${snapshot.nodes.length}`}</strong>
+          <small>{failedNodes > 0 ? `${failedNodes} 个节点异常` : '当前无失败节点'}</small>
+        </article>
+      </section>
+
+      <DataSourceUploader />
+
+      <section className="content-card workspace-section">
         <div className="section-heading">
           <span className="section-index">AX</span>
           <div>
-            <h3>异步工作台沙箱</h3>
-            <p>验证异步工作台桥接、状态回填以及后续 API 接入边界。</p>
-          </div>
-        </div>
-        <div className="summary-grid summary-grid-strong">
-          <div className="summary-card">
-            <span>桥接状态</span>
-            <strong>{session.bridge.status}</strong>
-          </div>
-          <div className="summary-card">
-            <span>当前任务</span>
-            <strong>{session.activeTask.name}</strong>
+            <h3>异步会话控制台</h3>
+            <p>在不离开当前页面的情况下完成任务加载、摘要更新、回放建任务和桥接状态重置。</p>
           </div>
         </div>
         <div className="summary-grid summary-grid-strong">
           <div className="summary-card">
             <span>当前阶段</span>
-            <strong>{snapshot.phase}</strong>
+            <strong>{getPhaseLabel(snapshot.phase)}</strong>
           </div>
           <div className="summary-card">
             <span>当前节点</span>
@@ -236,7 +301,7 @@ function AsyncWorkspacePage() {
           <p>{session.bridge.errorMessage ?? '无'}</p>
         </div>
         <label className="field-label" htmlFor="async-summary">
-          异步摘要草稿
+          会话摘要草稿
         </label>
         <input
           id="async-summary"
@@ -266,7 +331,7 @@ function AsyncWorkspacePage() {
           <button className="action-button secondary-button" type="button" onClick={() => void session.saveActiveTaskToHistory()}>
             保存到历史
           </button>
-          <button className="action-button secondary-button" type="button" onClick={session.resetBridge}>
+          <button className="action-button tertiary-button" type="button" onClick={session.resetBridge}>
             重置桥接
           </button>
         </div>
@@ -288,7 +353,7 @@ function AsyncWorkspacePage() {
         onStop={() => void handleStop()}
       />
       <EditableDataGrid onApply={(value) => void session.handleManualRevision(value)} />
-      <ChartBoard onTitleChange={(title) => void session.handleChartTitleChange(title)} />
+      <ChartBoard dataSource={session.activeTask.dataSource} onTitleChange={(title) => void session.handleChartTitleChange(title)} />
       <ReportEditor summary={session.reportSummary} onSummaryChange={(summary) => void session.handleReportSummaryChange(summary)} />
       <ExportCenter status={session.exportStatus} onExport={(record) => void session.handleExport(record)} />
 
@@ -297,7 +362,7 @@ function AsyncWorkspacePage() {
           <span className="section-index">AY</span>
           <div>
             <h3>会话快照</h3>
-            <p>观察异步动作完成后的会话摘要和导出状态。</p>
+            <p>汇总当前异步联调过程中的报告摘要和导出状态，方便在主流程末端快速验收。</p>
           </div>
         </div>
         <div className="summary-grid summary-grid-strong">

@@ -23,8 +23,6 @@ import { buildActiveTaskSyncUpdate, buildRunningTickUpdate, shouldStartRunningTi
 import {
   buildConfirmedCsvMappingContext,
   buildImportedDataContext,
-  buildSampleDataContext,
-  getDefaultSampleDataSource,
 } from './workspaceSampleData';
 import { createWorkspaceSessionRuntime } from './workspaceSessionRuntime';
 import {
@@ -37,6 +35,7 @@ import {
   buildStopAction,
 } from './workspaceWorkflowActions';
 import { type SessionUpdate } from './workspaceSessionState';
+import { workspaceFetch } from '../utils/workspaceIdentity';
 
 export type ParsedIntent = {
   request: string;
@@ -50,9 +49,11 @@ type UseWorkspaceSessionOptions = {
   runtime?: ReturnType<typeof createWorkspaceSessionRuntime>;
 };
 
-const START_BLOCKED_SUMMARY = '字段映射尚未确认，暂不能启动多 Agent 流程。';
-
 export { DEFAULT_EXPORT_STATUS, DEFAULT_REQUEST, DEFAULT_SUMMARY, EMPTY_REQUEST };
+
+function isStructuredDataSource(dataSource?: TaskDataSourceRecord) {
+  return !!dataSource && dataSource.kind !== 'document';
+}
 
 function parseMappingSummary(mappingSummary: string): FieldMappingRecord[] {
   const content = mappingSummary.includes('：') ? mappingSummary.split('：').slice(1).join('：') : mappingSummary;
@@ -69,6 +70,13 @@ function parseMappingSummary(mappingSummary: string): FieldMappingRecord[] {
 }
 
 function deriveIntentDefaults(dataSource?: TaskDataSourceRecord) {
+  if (dataSource?.kind === 'document') {
+    return {
+      metrics: '关键结论、风险、行动项',
+      dimensions: '章节、主题、时间',
+    };
+  }
+
   if (!dataSource || dataSource.fieldMappings.length === 0) {
     return {
       metrics: '同比、环比、区域对比',
@@ -89,11 +97,22 @@ function deriveIntentDefaults(dataSource?: TaskDataSourceRecord) {
   };
 }
 
-function shouldBlockStart(dataSource?: TaskDataSourceRecord) {
-  return dataSource?.kind === 'csv' && dataSource.fieldMappings.length === 0;
+function withDefaultFieldMappings(dataSource?: TaskDataSourceRecord) {
+  if (!dataSource || !isStructuredDataSource(dataSource) || dataSource.fieldMappings.length > 0) {
+    return dataSource;
+  }
+
+  return {
+    ...dataSource,
+    fieldMappings: (dataSource.columns ?? []).map((column) => ({ source: column.name, target: column.name })),
+  };
 }
 
 function getDataSourceValidationIssues(dataSource?: TaskDataSourceRecord) {
+  if (!isStructuredDataSource(dataSource)) {
+    return [];
+  }
+
   if (!dataSource || dataSource.fieldMappings.length === 0) {
     return [];
   }
@@ -103,17 +122,14 @@ function getDataSourceValidationIssues(dataSource?: TaskDataSourceRecord) {
     .filter((target, index, targets) => targets.indexOf(target) !== index)
     .filter((target, index, targets) => targets.indexOf(target) === index);
   const issues = duplicateTargets.map((target) => `字段“${target}”被重复映射，请保持一列只对应一个业务字段。`);
-  const mappedSalesColumn = dataSource.fieldMappings.find((item) => item.target === '销售额');
-  const salesColumnType = dataSource.columns?.find((item) => item.name === mappedSalesColumn?.source)?.type;
-
-  if (dataSource.columns?.length && (!mappedSalesColumn || salesColumnType !== 'number')) {
-    issues.push('销售额字段缺少数值列映射，请将数值字段映射为“销售额”。');
-  }
-
   return issues;
 }
 
 function getWorkflowValidationError(dataSource?: TaskDataSourceRecord) {
+  if (!isStructuredDataSource(dataSource)) {
+    return null;
+  }
+
   if (!dataSource || dataSource.fieldMappings.length === 0) {
     return null;
   }
@@ -122,20 +138,6 @@ function getWorkflowValidationError(dataSource?: TaskDataSourceRecord) {
 
   if (validationIssues.length > 0) {
     return validationIssues[0];
-  }
-
-  const targets = dataSource.fieldMappings.map((item) => item.target);
-
-  if (!targets.includes('销售额')) {
-    return '指标计算 Agent 缺少销售额字段映射，暂不能启动多 Agent 流程。';
-  }
-
-  if (!targets.includes('月份')) {
-    return '数据清洗 Agent 缺少月份字段映射，暂不能启动多 Agent 流程。';
-  }
-
-  if (!targets.includes('区域')) {
-    return '洞察分析 Agent 缺少区域字段映射，暂不能启动多 Agent 流程。';
   }
 
   return null;
@@ -155,7 +157,7 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
   const latestTaskRef = useRef<TaskRecord>(activeTask);
   const [reportSummary, setReportSummary] = useState(activeTask.summary || DEFAULT_SUMMARY);
   const [exportStatus, setExportStatus] = useState(activeTask.exports[0]?.status ?? DEFAULT_EXPORT_STATUS);
-  const [pendingDataSource, setPendingDataSource] = useState<TaskDataSourceRecord | undefined>(() => activeTask.dataSource);
+  const [pendingDataSource, setPendingDataSource] = useState<TaskDataSourceRecord | undefined>(() => withDefaultFieldMappings(activeTask.dataSource));
 
   const updateTask = (update: SessionUpdate) => {
     const current = latestTaskRef.current;
@@ -178,7 +180,7 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     setSnapshot(task.snapshot);
     setReportSummary(task.summary || DEFAULT_SUMMARY);
     setExportStatus(task.exports[0]?.status ?? DEFAULT_EXPORT_STATUS);
-    setPendingDataSource(task.dataSource);
+    setPendingDataSource(withDefaultFieldMappings(task.dataSource));
     setActiveTask(task);
   };
 
@@ -210,7 +212,7 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     setSnapshot(activeTask.snapshot);
     setReportSummary(activeTask.summary || DEFAULT_SUMMARY);
     setExportStatus(activeTask.exports[0]?.status ?? DEFAULT_EXPORT_STATUS);
-    setPendingDataSource(activeTask.dataSource);
+    setPendingDataSource(withDefaultFieldMappings(activeTask.dataSource));
   }, [activeTask.id, activeTask.name, activeTask.status]);
 
   useEffect(() => {
@@ -306,7 +308,7 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
 
     if (apiBaseUrl) {
-      void fetch(`${apiBaseUrl}/api/active-task`, {
+      void workspaceFetch(`${apiBaseUrl}/api/active-task`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(nextAction.taskUpdate),
@@ -315,7 +317,7 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
           return null;
         }
 
-        return fetch(`${apiBaseUrl}/api/history/save-active-task`, {
+        return workspaceFetch(`${apiBaseUrl}/api/history/save-active-task`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         });
@@ -341,12 +343,12 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
       return;
     }
 
-    void fetch(`${apiBaseUrl}/api/active-task`, {
+    void workspaceFetch(`${apiBaseUrl}/api/active-task`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(draft),
     }).then(() =>
-      fetch(`${apiBaseUrl}/api/templates/save-active-task`, {
+      workspaceFetch(`${apiBaseUrl}/api/templates/save-active-task`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(draft),
@@ -380,11 +382,6 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
   };
 
   const handleStart = () => {
-    if (shouldBlockStart(pendingDataSource)) {
-      applyBlockedStart(START_BLOCKED_SUMMARY);
-      return;
-    }
-
     const validationError = getWorkflowValidationError(pendingDataSource);
 
     if (validationError) {
@@ -426,22 +423,25 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     updateSnapshot(nextAction.snapshot, nextAction.summaryEntry);
   };
 
-  const handleLoadSampleData = () => {
-    const nextDataSource = getDefaultSampleDataSource();
+  const handleImportDataSource = (dataSource: TaskDataSourceRecord) => {
+    const mappedDataSource = withDefaultFieldMappings(dataSource) ?? dataSource;
     const nextSnapshot = {
       ...snapshot,
-      context: buildSampleDataContext(snapshot.context),
+      context: buildImportedDataContext(snapshot.context, mappedDataSource),
     };
 
-    setPendingDataSource(nextDataSource);
-    updateTask({
-      name: '2025 经营销售分析',
-      request: DEFAULT_REQUEST,
-      summary: '已自动生成 2025 经营销售样例数据，可直接启动多 Agent 分析流程。',
-      dataSource: nextDataSource,
-      risks: nextSnapshot.context.risks,
-    });
+    setPendingDataSource(mappedDataSource);
+    updateTask({ dataSource: mappedDataSource });
     updateSnapshot(nextSnapshot);
+
+    const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
+    if (apiBaseUrl) {
+      void workspaceFetch(`${apiBaseUrl}/api/active-task`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataSource: mappedDataSource, snapshot: nextSnapshot }),
+      });
+    }
   };
 
   const handleImportCsvData = (
@@ -450,23 +450,18 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     rowCount: number,
     columns: DataSourceColumnRecord[] = [],
   ) => {
-    const nextSnapshot = {
-      ...snapshot,
-      context: buildImportedDataContext(snapshot.context, fileName, columnCount, rowCount),
-    };
-
-    const nextDataSource: TaskDataSourceRecord = {
+    handleImportDataSource({
       kind: 'csv',
+      formatLabel: 'CSV',
       fileName,
       columnCount,
       rowCount,
       columns,
+      previewRows: [],
+      analysisRows: [],
+      textPreview: '',
       fieldMappings: [],
-    };
-
-    setPendingDataSource(nextDataSource);
-    updateTask({ dataSource: nextDataSource });
-    updateSnapshot(nextSnapshot);
+    });
   };
 
   const handleConfirmCsvMapping = (mappingSummary: string) => {
@@ -487,6 +482,15 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
       nextDataSource.validationIssues = getDataSourceValidationIssues(nextDataSource);
       setPendingDataSource(nextDataSource);
       updateTask({ dataSource: nextDataSource });
+
+      const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
+      if (apiBaseUrl) {
+        void workspaceFetch(`${apiBaseUrl}/api/active-task`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataSource: nextDataSource, snapshot: nextSnapshot }),
+        });
+      }
     }
 
     setReportSummary(nextSummary);
@@ -513,8 +517,8 @@ export function useWorkspaceSession(options: UseWorkspaceSessionOptions = {}) {
     handleExport,
     handleFail,
     handleConfirmCsvMapping,
+    handleImportDataSource,
     handleImportCsvData,
-    handleLoadSampleData,
     handleLoadHistoryTask,
     handleManualRevision,
     handleParse,

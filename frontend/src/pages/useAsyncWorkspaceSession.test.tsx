@@ -336,39 +336,6 @@ describe('useAsyncWorkspaceSession', () => {
     expect(result.current.reportSummary).toContain('修正后销售趋势');
   });
 
-  it('loads sample data and syncs input summary through the async runtime bridge', async () => {
-    const { result } = renderHook(
-      () =>
-        useAsyncWorkspaceSession({
-          runtime: {
-            async getActiveTask() {
-              return createTask();
-            },
-            async updateActiveTask(update) {
-              return createTask({
-                snapshot: update.snapshot ?? createTask().snapshot,
-                risks: update.risks ?? createTask().risks,
-              });
-            },
-          },
-        }),
-      {
-        wrapper: createWrapper(),
-      },
-    );
-
-    await act(async () => {
-      await result.current.handleLoadSampleData();
-    });
-
-    await waitFor(() => {
-      expect(result.current.bridge.status).toBe('成功');
-    });
-
-    expect(result.current.activeTask.snapshot.context.inputSummary).toBe('已加载示例销售数据，准备检查字段映射与缺失值。');
-    expect(result.current.activeTask.snapshot.context.latestLog).toBe('示例数据已载入工作台，等待需求解析与后续执行。');
-  });
-
   it('resets the active task through the async runtime bridge', async () => {
     const resetTask = createTask({
       id: 'reset',

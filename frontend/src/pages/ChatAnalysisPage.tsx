@@ -1,105 +1,344 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
+import ChartBoard from '../components/charts/ChartBoard';
+import { useWorkbenchShell } from '../context/WorkbenchShellContext';
+import { aggregateComparisonRows, getAnalysisRows, getNumericFields } from '../utils/dataAnalysis';
+
+function formatValue(value: number) {
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value);
+}
 
 function ChatAnalysisPage() {
-  const [draft, setDraft] = useState('请基于当前数据集，找出销售增长最快的区域并生成报告摘要。');
-  const [focusedPreview, setFocusedPreview] = useState('实时结果预览');
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [messages, setMessages] = useState([
-    { role: '用户', text: '分析 2025 年月度销售趋势，并输出管理层摘要。' },
-    { role: '调度 Agent', text: '已拆分为数据清洗、指标计算、可视化、洞察分析、报告生成五个子任务。' },
-    { role: '统计分析 Agent', text: '销售额整体上升，华东区域贡献最高，6 月后增长斜率变大。' },
-    { role: '报告撰写 Agent', text: '已形成趋势判断、区域贡献、风险提示和建议动作。' },
-  ]);
+  const { activeTask } = useWorkbenchShell();
+  const dataSource = activeTask.dataSource;
+  const rows = getAnalysisRows(dataSource);
+  const fields = dataSource?.columns?.map((column) => column.name) ?? [];
+  const numericFields = dataSource ? getNumericFields(dataSource, rows) : [];
+  const metricArtifact = [...(activeTask.artifacts ?? [])].reverse().find((item) => item.type === 'metric_result');
+  const analysisArtifact = [...(activeTask.artifacts ?? [])].reverse().find((item) => item.type === 'analysis');
+  const chartArtifact = [...(activeTask.artifacts ?? [])].reverse().find((item) => item.type === 'chart_spec');
+  const isDocumentMode =
+    dataSource?.kind === 'document'
+    || String(metricArtifact?.content?.analysisMode ?? analysisArtifact?.content?.analysisMode ?? '') === 'document';
 
-  const sendMessage = () => {
-    if (!draft.trim()) return;
-    setMessages((current) => [
-      ...current,
-      { role: '用户', text: draft.trim() },
-      { role: '调度 Agent', text: '已接收新需求，正在重新编排清洗、分析、可视化和报告任务。' },
-    ]);
-    setDraft('');
-  };
+  const [dimension, setDimension] = useState('');
+  const [metric, setMetric] = useState('');
 
-  const applyTemplate = (value: string) => {
-    setDraft(value);
-  };
+  useEffect(() => {
+    const nextMetric = numericFields[0] ?? '';
+    setMetric(nextMetric);
+    setDimension(fields.find((field) => field !== nextMetric) ?? fields[0] ?? '');
+  }, [dataSource?.fileName]);
+
+  const points = useMemo(
+    () => (dimension && metric ? aggregateComparisonRows(rows, dimension, metric).sort((left, right) => right.value - left.value) : []),
+    [dimension, metric, rows],
+  );
+
+  const total = points.reduce((sum, point) => sum + point.value, 0);
+  const average = points.length ? total / points.length : 0;
+  const highest = points[0];
+  const lowest = points[points.length - 1];
+
+  if (!dataSource) {
+    return (
+      <div className="workspace-grid compact-page">
+        <section className="enterprise-page-hero">
+          <span className="enterprise-page-kicker">数据洞察 / 分析中枢</span>
+          <div className="enterprise-page-title-row">
+            <div>
+              <h3>分析结果总览</h3>
+              <p>这里集中展示当前任务的数据洞察、文档结论和图表预览。先在工作台上传数据并启动流程，系统才会生成可视化结果。</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="enterprise-metric-strip">
+          <article className="enterprise-metric-card">
+            <span>当前状态</span>
+            <strong>等待数据源</strong>
+            <small>尚未加载分析文件</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>分析模式</span>
+            <strong>未识别</strong>
+            <small>表格分析或文档分析</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>可用图表</span>
+            <strong>0</strong>
+            <small>需先生成图表规格</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>输出结果</span>
+            <strong>待生成</strong>
+            <small>等待工作流执行</small>
+          </article>
+        </section>
+
+        <section className="content-card workspace-section">
+          <div className="section-heading">
+            <span className="section-index">IA</span>
+            <div>
+              <h3>数据洞察</h3>
+              <p>上传文件后，这里会自动展示关键指标、图表预览和分组排行。</p>
+            </div>
+          </div>
+          <p className="status-note">请先在工作台完成数据源接入并启动分析。</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (isDocumentMode) {
+    const evidence =
+      ((analysisArtifact?.content?.evidence as { evidence?: Array<{ text: string; score: number }>; keywords?: Array<{ term: string; count: number }> } | undefined)?.evidence
+      ?? []);
+    const keywords = ((analysisArtifact?.content?.evidence as { keywords?: Array<{ term: string; count: number }> } | undefined)?.keywords ?? []);
+
+    return (
+      <div className="workspace-grid compact-page">
+        <section className="enterprise-page-hero">
+          <span className="enterprise-page-kicker">文档洞察 / 语义分析</span>
+          <div className="enterprise-page-title-row">
+            <div>
+              <h3>文档分析结果台</h3>
+              <p>{`基于 ${dataSource.fileName} 的文本内容输出摘要、关键词分布和关键证据，适合方案、纪要、报告、访谈等非结构化内容分析。`}</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="enterprise-metric-strip">
+          <article className="enterprise-metric-card">
+            <span>字符数</span>
+            <strong>{dataSource.profile?.charCount ?? 0}</strong>
+            <small>文档文本规模</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>段落数</span>
+            <strong>{dataSource.profile?.paragraphCount ?? dataSource.rowCount}</strong>
+            <small>结构切分结果</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>关键词数</span>
+            <strong>{keywords.length}</strong>
+            <small>已提取高频主题</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>证据片段</span>
+            <strong>{evidence.length}</strong>
+            <small>可追溯文本依据</small>
+          </article>
+        </section>
+
+        <ChartBoard
+          dataSource={dataSource}
+          metricArtifact={metricArtifact}
+          chartArtifact={undefined}
+          onTitleChange={() => undefined}
+        />
+
+        <section className="content-card workspace-section">
+          <div className="section-heading">
+            <span className="section-index">IA</span>
+            <div>
+              <h3>文档洞察</h3>
+              <p>系统会将自然语言分析结果与可追溯证据绑定，便于直接进入报告编辑和审核。</p>
+            </div>
+          </div>
+          <p className="status-note">{String(analysisArtifact?.content?.summary ?? '请先在工作台执行文档分析流程。')}</p>
+        </section>
+
+        <section className="content-card workspace-section">
+          <div className="section-heading">
+            <span className="section-index">KW</span>
+            <div>
+              <h3>高频主题词</h3>
+              <p>按文档中出现频次提取的核心主题，帮助快速锁定讨论重点。</p>
+            </div>
+          </div>
+          {keywords.length > 0 ? (
+            <ul className="context-risk-list">
+              {keywords.map((item) => <li key={item.term}>{`${item.term}：${item.count}`}</li>)}
+            </ul>
+          ) : (
+            <p className="status-note">暂未识别到关键词，请先完成文档分析。</p>
+          )}
+        </section>
+
+        <section className="content-card workspace-section">
+          <div className="section-heading">
+            <span className="section-index">EV</span>
+            <div>
+              <h3>关键证据</h3>
+              <p>展示与分析结论最相关的原文片段，确保报告可追溯。</p>
+            </div>
+          </div>
+          {evidence.length > 0 ? (
+            <ol className="context-risk-list">
+              {evidence.map((item, index) => <li key={`${index}-${item.text}`}>{item.text}</li>)}
+            </ol>
+          ) : (
+            <p className="status-note">暂无可展示证据，请先运行文档分析流程。</p>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  if (rows.length === 0 || numericFields.length === 0) {
+    return (
+      <div className="workspace-grid compact-page">
+        <section className="enterprise-page-hero">
+          <span className="enterprise-page-kicker">表格洞察 / 数值分析</span>
+          <div className="enterprise-page-title-row">
+            <div>
+              <h3>数据分析结果台</h3>
+              <p>当前已接入文件，但还缺少足够的结构化数值字段，系统无法生成有效统计结果。</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="enterprise-metric-strip">
+          <article className="enterprise-metric-card">
+            <span>数据文件</span>
+            <strong>{dataSource.fileName}</strong>
+            <small>{`${dataSource.rowCount} 行记录`}</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>字段数</span>
+            <strong>{fields.length}</strong>
+            <small>结构化字段总量</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>数值字段</span>
+            <strong>{numericFields.length}</strong>
+            <small>不足以支撑统计分析</small>
+          </article>
+          <article className="enterprise-metric-card">
+            <span>当前状态</span>
+            <strong>待补充字段</strong>
+            <small>建议上传包含数值列的数据</small>
+          </article>
+        </section>
+
+        <section className="content-card workspace-section">
+          <div className="section-heading">
+            <span className="section-index">IA</span>
+            <div>
+              <h3>数据洞察</h3>
+              <p>系统需要至少一个可聚合数值字段，才能生成排行、图表和统计结论。</p>
+            </div>
+          </div>
+          <p className="status-note">当前数据源缺少可用于统计分析的有效数值字段。</p>
+        </section>
+      </div>
+    );
+  }
 
   return (
-    <div className="workspace-grid chat-page chat-page-focused">
-      <section className="content-card workspace-section chat-main">
-        <div className="section-heading">
-          <span className="section-index">CA</span>
+    <div className="workspace-grid compact-page">
+      <section className="enterprise-page-hero">
+        <span className="enterprise-page-kicker">数据洞察 / 图表与排行</span>
+        <div className="enterprise-page-title-row">
           <div>
-            <h3>对话分析</h3>
-            <p>用自然语言发起分析，查看各 Agent 的阶段性回复和最终结论。</p>
-          </div>
-        </div>
-        <div className="chat-stream">
-          {messages.map((message, index) => (
-            <article
-              className={`chat-bubble chat-bubble-${message.role.includes('用户') ? 'user' : 'agent'}`}
-              key={`${message.role}-${index}`}
-              onClick={() => setFocusedPreview(`${message.role} 结果预览`)}
-            >
-              <strong>{message.role}</strong>
-              <p>{message.text}</p>
-            </article>
-          ))}
-        </div>
-        <div className="chat-input-panel">
-          <div className="actions-row">
-            <button className="action-button tertiary-button" type="button" onClick={() => applyTemplate('按月份复盘销售额、订单数和客单价变化。')}>
-              月度复盘
-            </button>
-            <button className="action-button tertiary-button" type="button" onClick={() => applyTemplate('按渠道拆解 ROI、转化率和异常波动原因。')}>
-              渠道分析
-            </button>
-          </div>
-          <textarea className="text-input text-area" value={draft} onChange={(event) => setDraft(event.target.value)} />
-          <div className="actions-row">
-            <button className="action-button" type="button" onClick={sendMessage}>
-              启动多 Agent 协同
-            </button>
-            <button className="action-button secondary-button" type="button">
-              上传数据集
-            </button>
-            <button className="action-button secondary-button" type="button">
-              终止任务
-            </button>
-            <button className="action-button secondary-button" type="button" onClick={() => setPreviewOpen((current) => !current)}>
-              {previewOpen ? '收起实时结果' : '展开实时结果'}
-            </button>
+            <h3>结构化数据分析结果台</h3>
+            <p>{`基于 ${dataSource.fileName} 的 ${rows.length} 条有效记录生成分组汇总、图表预览和趋势结论，支持直接切换统计维度与指标。`}</p>
           </div>
         </div>
       </section>
 
-      <section className={`content-card workspace-section chat-preview-drawer${previewOpen ? ' open' : ''}`}>
+      <section className="enterprise-metric-strip">
+        <article className="enterprise-metric-card">
+          <span>汇总总值</span>
+          <strong>{formatValue(total)}</strong>
+          <small>{metric || '等待选择指标'}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>分组平均</span>
+          <strong>{formatValue(average)}</strong>
+          <small>{dimension || '等待选择维度'}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>最高分组</span>
+          <strong>{highest ? highest.name : '暂无'}</strong>
+          <small>{highest ? formatValue(highest.value) : '无可用结果'}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>最低分组</span>
+          <strong>{lowest ? lowest.name : '暂无'}</strong>
+          <small>{lowest ? formatValue(lowest.value) : '无可用结果'}</small>
+        </article>
+      </section>
+
+      <ChartBoard
+        dataSource={dataSource}
+        metricArtifact={metricArtifact}
+        chartArtifact={chartArtifact}
+        onTitleChange={() => undefined}
+      />
+
+      <section className="content-card workspace-section">
         <div className="section-heading">
-          <span className="section-index">PR</span>
+          <span className="section-index">CT</span>
           <div>
-            <h3>{focusedPreview}</h3>
-            <p>点击 Agent 对话气泡后，这里会切换到对应预览。</p>
+            <h3>分析控制台</h3>
+            <p>切换比较维度和汇总指标，图表与排行会同步更新。</p>
           </div>
         </div>
         <div className="summary-grid">
-          <div className="summary-card">
-            <span>数据预览</span>
-            <strong>12 月 / 3 区域 / 销售额</strong>
-          </div>
-          <div className="summary-card">
-            <span>图表预览</span>
-            <strong>趋势图、柱状图、饼图</strong>
-          </div>
-          <div className="summary-card">
-            <span>片段洞察</span>
-            <strong>华东区域连续领先</strong>
-          </div>
-          <div className="summary-card">
-            <span>完整报告</span>
-            <strong>等待确认后导出</strong>
+          <label className="field-label">
+            比较维度
+            <select className="text-input" value={dimension} onChange={(event) => setDimension(event.target.value)}>
+              {fields.map((field) => (
+                <option key={field} value={field}>
+                  {field}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-label">
+            汇总指标
+            <select className="text-input" value={metric} onChange={(event) => setMetric(event.target.value)}>
+              {numericFields.map((field) => (
+                <option key={field} value={field}>
+                  {field}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {highest && lowest ? (
+          <p className="status-note">{`${highest.name} 相比 ${lowest.name} 高 ${formatValue(highest.value - lowest.value)}。`}</p>
+        ) : null}
+      </section>
+
+      <section className="content-card workspace-section">
+        <div className="section-heading">
+          <span className="section-index">RK</span>
+          <div>
+            <h3>分组排行</h3>
+            <p>{`按 ${dimension} 汇总 ${metric}，结果按数值从高到低排序。`}</p>
           </div>
         </div>
+        <table className="preview-table">
+          <thead>
+            <tr>
+              <th>排名</th>
+              <th>{dimension}</th>
+              <th>{metric}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((point, index) => (
+              <tr key={point.name}>
+                <td>{index + 1}</td>
+                <td>{point.name}</td>
+                <td>{formatValue(point.value)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </section>
     </div>
   );

@@ -76,6 +76,8 @@ function cloneTask(task: TaskRecord): TaskRecord {
       ? {
           ...task.dataSource,
           columns: task.dataSource.columns?.map((item) => ({ ...item })),
+          previewRows: task.dataSource.previewRows?.map((item) => ({ ...item })),
+          analysisRows: task.dataSource.analysisRows?.map((item) => ({ ...item })),
           fieldMappings: task.dataSource.fieldMappings.map((item) => ({ ...item })),
           validationIssues: task.dataSource.validationIssues ? [...task.dataSource.validationIssues] : undefined,
         }

@@ -118,7 +118,7 @@ describe('useWorkspaceSession', () => {
     });
   });
 
-  it('blocks workflow start when required metric mapping is missing', async () => {
+  it('starts workflow when uploaded fields do not use sales naming', async () => {
     const { result } = renderHook(() => useWorkspaceSession(), {
       wrapper: createWrapper(),
     });
@@ -140,8 +140,7 @@ describe('useWorkspaceSession', () => {
     });
 
     await waitFor(() => {
-      expect(result.current.snapshot.phase).toBe('idle');
-      expect(result.current.activeTask.risks.length).toBeGreaterThan(0);
+      expect(result.current.snapshot.phase).toBe('running');
     });
   });
 

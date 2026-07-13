@@ -1,115 +1,124 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
-import { createMockTaskRepository } from '../mock/mockTaskRepository';
-
-const repository = createMockTaskRepository();
-
-type ReportRecord = ReturnType<typeof repository.listRecentTasks>[number];
+import { useWorkbenchShell } from '../context/WorkbenchShellContext';
+import type { TaskRecord } from '../types/tasks';
+import { defaultWorkbenchContext } from '../types/workbench';
+import { withWorkspaceQuery, workspaceFetch } from '../utils/workspaceIdentity';
+import { createEmptyTask } from './emptyTask';
 
 function ReportsPage() {
-  const navigate = useNavigate();
-  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL;
-  const [reports, setReports] = useState<ReportRecord[]>(() => repository.listRecentTasks());
-  const [status, setStatus] = useState('等待选择报告操作');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const { activeTask, setActiveTask, setContext } = useWorkbenchShell();
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL ?? '';
+  const [reports, setReports] = useState<TaskRecord[]>([]);
+  const [status, setStatus] = useState('等待选择报告。');
 
-  useEffect(() => {
-    if (!apiBaseUrl) return;
-    let cancelled = false;
-    void fetch(`${apiBaseUrl}/api/reports`)
-      .then((response) => (response.ok ? response.json() : repository.listRecentTasks()))
-      .then((nextReports: ReportRecord[]) => {
-        if (!cancelled) setReports(nextReports);
-      })
-      .catch(() => {
-        if (!cancelled) setReports(repository.listRecentTasks());
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBaseUrl]);
-
-  const replayReport = (report: ReportRecord) => {
-    repository.loadTaskIntoWorkspace(report.id);
-    setStatus(`已载入任务回放：${report.name}`);
-    navigate('/workspace');
+  const loadReports = () => {
+    void workspaceFetch(`${apiBaseUrl}/api/history/tasks`)
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) => setReports(items))
+      .catch(() => setReports([]));
   };
 
-  const filteredReports =
-    statusFilter === 'all' ? reports : reports.filter((report) => (statusFilter === 'review' ? report.status.includes('复核') : report.status.includes('导出')));
+  useEffect(loadReports, [apiBaseUrl, activeTask.id, activeTask.exports.length]);
+
+  const reportList = activeTask.dataSource ? [activeTask, ...reports.filter((report) => report.id !== activeTask.id)] : reports;
+
+  const deleteReport = async (report: TaskRecord) => {
+    setStatus(`正在删除 ${report.name}...`);
+    const isActiveReport = report.id === activeTask.id;
+    const response = await workspaceFetch(
+      `${apiBaseUrl}${isActiveReport ? '/api/tasks/active/report' : `/api/history/tasks/${encodeURIComponent(report.id)}`}`,
+      { method: 'DELETE' },
+    );
+    if (!response.ok) {
+      setStatus('删除失败。');
+      return;
+    }
+    if (isActiveReport) {
+      setActiveTask(createEmptyTask());
+      setContext(defaultWorkbenchContext);
+    } else {
+      setReports((current) => current.filter((item) => item.id !== report.id));
+    }
+    setStatus(`已彻底清除 ${report.name}。`);
+    if (!isActiveReport) loadReports();
+  };
 
   return (
-    <div className="workspace-grid">
+    <div className="workspace-grid compact-page">
+      <section className="enterprise-page-hero">
+        <span className="enterprise-page-kicker">报告中心 / 交付档案</span>
+        <div className="enterprise-page-title-row">
+          <div>
+            <h3>分析报告交付中心</h3>
+            <p>统一查看持久化分析报告、导出文件和当前会话产物，支持直接下载与彻底删除。</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="enterprise-metric-strip">
+        <article className="enterprise-metric-card">
+          <span>报告总数</span>
+          <strong>{reportList.length}</strong>
+          <small>当前可访问报告</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>当前会话</span>
+          <strong>{activeTask.dataSource ? activeTask.name : '未生成会话报告'}</strong>
+          <small>{activeTask.status}</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>导出记录</span>
+          <strong>{reportList.reduce((sum, report) => sum + (report.exports?.length ?? 0), 0)}</strong>
+          <small>累计可下载文件</small>
+        </article>
+        <article className="enterprise-metric-card">
+          <span>当前状态</span>
+          <strong>{status}</strong>
+          <small>删除、导出后会即时反馈</small>
+        </article>
+      </section>
+
       <section className="content-card workspace-section">
         <div className="section-heading">
           <span className="section-index">RC</span>
           <div>
-            <h3>报告中心</h3>
-            <p>管理多 Agent 生成的分析报告，支持查看、下载、分享和重新发起分析。</p>
+            <h3>报告列表</h3>
+            <p>查看持久化分析报告与实际生成的下载文件。</p>
           </div>
         </div>
-        <div className="log-card context-block-log-success">
-          <strong>操作反馈</strong>
-          <p>{status}</p>
-        </div>
-        <div className="actions-row report-filter-bar">
-          <label className="composer-field" htmlFor="report-status-filter">
-            <span>状态筛选</span>
-            <select id="report-status-filter" className="text-input" aria-label="报告状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="all">全部报告</option>
-              <option value="review">待复核</option>
-              <option value="exported">已导出</option>
-            </select>
-          </label>
-          <label className="composer-field" htmlFor="report-time-filter">
-            <span>时间筛选</span>
-            <input id="report-time-filter" className="text-input" type="date" aria-label="报告时间筛选" />
-          </label>
-        </div>
         <div className="history-list history-list-grid">
-          {filteredReports.map((report) => (
+          {reportList.map((report) => (
             <article className="history-card report-card" key={report.id}>
               <div className="history-card-header">
                 <h4>{report.name}</h4>
-                <span className="history-badge">{report.time}</span>
+                <span className="history-badge">{report.status}</span>
               </div>
               <p>{report.summary}</p>
-              <div className="chart-preview report-thumbnail" aria-label={`${report.name} 缩略图`} />
+              {report.dataSource?.analysisScope ? (
+                <p className="status-note">
+                  {`计算范围：${report.dataSource.analysisScope.rowsProcessed}/${report.dataSource.analysisScope.rowCount} 行`}
+                </p>
+              ) : null}
               <div className="actions-row">
-                <button className="action-button" type="button" onClick={() => setStatus(`已打开：${report.name}`)}>
-                  查看
-                </button>
-                <button className="action-button secondary-button" type="button" onClick={() => setStatus(`PDF 下载已生成：${report.name}`)}>
-                  下载 PDF
-                </button>
-                <button
-                  className="action-button secondary-button"
-                  type="button"
-                  onClick={() => {
-                    repository.loadTaskIntoWorkspace(report.id);
-                    setStatus(`已基于 ${report.name} 重新发起分析`);
-                    navigate('/workspace');
-                  }}
-                >
-                  重新分析
-                </button>
-                <button className="action-button secondary-button" type="button" onClick={() => replayReport(report)}>
-                  任务回放
-                </button>
-                <button
-                  className="action-button tertiary-button"
-                  type="button"
-                  onClick={() => {
-                    repository.saveActiveTaskAsTemplate({ name: report.name, request: report.request, summary: report.summary });
-                    setStatus(`已另存为模板：${report.name}`);
-                  }}
-                >
-                  另存为模板
-                </button>
+                {(report.exports ?? []).map((item, index) =>
+                  item.artifactId ? (
+                    <a
+                      className="action-button secondary-button"
+                      key={`${item.artifactId}-${index}`}
+                      href={withWorkspaceQuery(`${apiBaseUrl}/api/artifacts/${item.artifactId}/download`)}
+                    >
+                      {`下载 ${item.format}`}
+                    </a>
+                  ) : null,
+                )}
+                {report.exports?.length === 0 ? <span className="status-note">尚未生成导出文件。请先在工作台完成审核并导出。</span> : null}
+                <button className="action-button secondary-button" type="button" onClick={() => void deleteReport(report)}>彻底删除</button>
               </div>
+              <button className="action-button tertiary-button" type="button" onClick={() => setStatus(`报告 ${report.name} 已保存在任务历史中。`)}>查看状态</button>
             </article>
           ))}
+          {reportList.length === 0 ? <p className="status-note">暂无持久化报告。请先在工作台完成分析。</p> : null}
         </div>
       </section>
     </div>

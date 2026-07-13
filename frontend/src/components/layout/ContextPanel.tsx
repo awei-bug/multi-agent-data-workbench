@@ -89,10 +89,6 @@ function ContextPanel({ collapsed = false, context, activeTask, focusedNodeId, o
             <span className="context-label">输出摘要</span>
             <p>{displayContext.outputSummary}</p>
           </div>
-          <div className="context-block context-block-log context-block-log-info">
-            <span className="context-label">输出摘要</span>
-            <p>{displayContext.outputSummary}</p>
-          </div>
           <div className="context-block context-block-log context-block-log-success">
             <span className="context-label">最新日志</span>
             <p>{displayContext.latestLog}</p>

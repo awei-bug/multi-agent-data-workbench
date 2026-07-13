@@ -40,6 +40,12 @@ from backend_py.auth import (
     validate_username,
     verify_password,
 )
+from backend_py.compliance import (
+    apply_html_watermark,
+    apply_text_watermark,
+    build_watermark_lines,
+    mask_text,
+)
 from backend_py.connectors import (
     ConnectorError,
     build_connector_data_source,
@@ -360,6 +366,12 @@ def create_app(
     oidc_authorize_url: str = "",
     oidc_token_url: str = "",
     oidc_userinfo_url: str = "",
+    export_watermark_enabled: bool = True,
+    export_mask_sensitive: bool = True,
+    retention_history_days: int = 0,
+    retention_dataset_days: int = 0,
+    retention_artifact_days: int = 0,
+    retention_audit_days: int = 0,
 ) -> FastAPI:
     security_report = validate_production_settings(
         auth_required=auth_required,
@@ -1225,6 +1237,14 @@ def create_app(
             },
             "security": {
                 "productionMode": production_mode,
+                "exportWatermark": export_watermark_enabled,
+                "exportMaskSensitive": export_mask_sensitive,
+                "retention": {
+                    "historyDays": retention_history_days,
+                    "datasetDays": retention_dataset_days,
+                    "artifactDays": retention_artifact_days,
+                    "auditDays": retention_audit_days,
+                },
                 "hsts": enable_hsts,
                 "enforceProductionSecurity": enforce_production_security,
                 "ok": security_report.ok,
@@ -1659,46 +1679,105 @@ def create_app(
         return task
 
     @app.post("/api/tasks/active/exports")
-    def export_active_task(payload: ExportRequest) -> dict:
+    def export_active_task(payload: ExportRequest, request: Request) -> dict:
         task = repo.get_active_task()
         audit = next((item for item in reversed(task.get("artifacts", [])) if item.get("type") == "audit"), None)
         if not audit:
             raise HTTPException(status_code=409, detail="complete workflow audit before exporting")
-        report = payload.report or next((item.get("content", {}).get("markdown") for item in reversed(task.get("artifacts", [])) if item.get("type") == "report_markdown"), task.get("summary", ""))
+        report = payload.report or next(
+            (
+                item.get("content", {}).get("markdown")
+                for item in reversed(task.get("artifacts", []))
+                if item.get("type") == "report_markdown"
+            ),
+            task.get("summary", ""),
+        )
+        if export_mask_sensitive:
+            report = mask_text(str(report or ""))
+        auth_user = getattr(request.state, "auth_user", None)
+        tenant_id, owner_id = get_workspace_scope()
+        watermark_lines = build_watermark_lines(
+            username=(auth_user.username if auth_user else owner_id),
+            tenant_id=(auth_user.tenant_id if auth_user else tenant_id),
+        )
+        if export_watermark_enabled:
+            report = apply_text_watermark(str(report or ""), watermark_lines)
         export_format = payload.format.lower()
-        safe_name = "".join(character if character not in '\\/:*?\"<>|' else "_" for character in task.get("name", "analysis-report"))
+        safe_name = "".join(
+            character if character not in '\\/:*?"<>|' else "_"
+            for character in task.get("name", "analysis-report")
+        )
         if export_format in {"markdown", "md"}:
-            file_name, mime_type, content = f"{safe_name}.md", "text/markdown; charset=utf-8", report.encode("utf-8")
+            file_name, mime_type, content = (
+                f"{safe_name}.md",
+                "text/markdown; charset=utf-8",
+                str(report).encode("utf-8"),
+            )
         elif export_format == "html":
-            file_name, mime_type, content = f"{safe_name}.html", "text/html; charset=utf-8", f"<!doctype html><meta charset='utf-8'><title>{escape(task.get('name', '分析报告'))}</title><pre>{escape(report)}</pre>".encode("utf-8")
+            html = (
+                f"<!doctype html><meta charset='utf-8'><title>{escape(task.get('name', '分析报告'))}</title>"
+                f"<pre>{escape(str(report))}</pre>"
+            )
+            if export_watermark_enabled:
+                html = apply_html_watermark(html, watermark_lines)
+            file_name, mime_type, content = (
+                f"{safe_name}.html",
+                "text/html; charset=utf-8",
+                html.encode("utf-8"),
+            )
         elif export_format in {"word", "docx"}:
             from docx import Document
+
             document = Document()
             document.add_heading(task.get("name", "分析报告"), 0)
-            for line in report.splitlines():
+            if export_watermark_enabled:
+                for line in watermark_lines:
+                    document.add_paragraph(line)
+            for line in str(report).splitlines():
                 document.add_paragraph(line)
             temp = store.root / "exports" / f"{uuid4()}.docx"
             temp.parent.mkdir(parents=True, exist_ok=True)
             document.save(temp)
             content = temp.read_bytes()
             temp.unlink(missing_ok=True)
-            file_name, mime_type = f"{safe_name}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            file_name, mime_type = (
+                f"{safe_name}.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
         elif export_format == "pdf":
             from reportlab.lib.pagesizes import A4
             from reportlab.pdfbase import pdfmetrics
             from reportlab.pdfbase.cidfonts import UnicodeCIDFont
             from reportlab.pdfgen import canvas
+
             pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
             temp = store.root / "exports" / f"{uuid4()}.pdf"
             temp.parent.mkdir(parents=True, exist_ok=True)
             pdf = canvas.Canvas(str(temp), pagesize=A4)
+            width, height = A4
+            if export_watermark_enabled:
+                pdf.saveState()
+                pdf.setFont("STSong-Light", 18)
+                pdf.setFillGray(0.88)
+                pdf.translate(width / 2, height / 2)
+                pdf.rotate(30)
+                pdf.drawCentredString(0, 0, watermark_lines[0][:40])
+                pdf.restoreState()
             pdf.setFont("STSong-Light", 11)
             y = 800
-            for line in report.splitlines() or ["分析报告"]:
+            for line in str(report).splitlines() or ["分析报告"]:
                 pdf.drawString(48, y, line[:90])
                 y -= 18
                 if y < 48:
                     pdf.showPage()
+                    if export_watermark_enabled:
+                        pdf.saveState()
+                        pdf.setFont("STSong-Light", 18)
+                        pdf.setFillGray(0.88)
+                        pdf.translate(width / 2, height / 2)
+                        pdf.rotate(30)
+                        pdf.drawCentredString(0, 0, watermark_lines[0][:40])
+                        pdf.restoreState()
                     pdf.setFont("STSong-Light", 11)
                     y = 800
             pdf.save()
@@ -1708,11 +1787,37 @@ def create_app(
         else:
             raise HTTPException(status_code=400, detail="unsupported export format")
         stored = store.save("exports", file_name, content)
-        artifact = {**stored, "taskId": task["id"], "type": "export", "format": export_format, "mimeType": mime_type, "createdAt": datetime.now(timezone.utc).isoformat()}
+        artifact = {
+            **stored,
+            "taskId": task["id"],
+            "type": "export",
+            "format": export_format,
+            "mimeType": mime_type,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "watermark": export_watermark_enabled,
+            "masked": export_mask_sensitive,
+        }
         repo.add_artifact(artifact)
-        exports = [{"format": export_format.upper(), "status": f"{export_format.upper()} 导出完成", "artifactId": artifact["id"]}, *task.get("exports", [])]
+        exports = [
+            {
+                "format": export_format.upper(),
+                "status": f"{export_format.upper()} 导出完成",
+                "artifactId": artifact["id"],
+            },
+            *task.get("exports", []),
+        ]
         repo.update_active_task({"exports": exports})
-        _audit(repo, "task.export", task["id"], {"artifactId": artifact["id"], "format": export_format})
+        _audit(
+            repo,
+            "task.export",
+            task["id"],
+            {
+                "artifactId": artifact["id"],
+                "format": export_format,
+                "watermark": export_watermark_enabled,
+                "masked": export_mask_sensitive,
+            },
+        )
         return {**artifact, "downloadUrl": f"/api/artifacts/{artifact['id']}/download"}
 
     @app.get("/api/artifacts/{artifact_id}/download")
@@ -1979,5 +2084,61 @@ def create_app(
         tenant_id, owner_id = get_workspace_scope()
         job_view = workflow_runner.job_public_view(workflow_runner.get_job(tenant_id, owner_id))
         return attach_execution_meta(task, job_view, mode="async" if workflow_async else "sync")
+
+
+    @app.post("/api/admin/retention/purge")
+    def purge_retention(request: Request) -> dict:
+        require_admin_access(request)
+        result = repo.purge_expired_resources(
+            history_days=retention_history_days,
+            dataset_days=retention_dataset_days,
+            artifact_days=retention_artifact_days,
+            audit_days=retention_audit_days,
+        )
+        deleted_files = 0
+        for artifact in result.get("artifacts") or []:
+            key = artifact.get("storageKey")
+            if key:
+                try:
+                    if store.delete(key):
+                        deleted_files += 1
+                except Exception:
+                    pass
+        for dataset in result.get("datasets") or []:
+            key = dataset.get("storageKey")
+            if key:
+                try:
+                    if store.delete(key):
+                        deleted_files += 1
+                except Exception:
+                    pass
+        _audit(
+            repo,
+            "admin.retention.purge",
+            "retention",
+            {
+                "history": len(result.get("historyTaskIds") or []),
+                "datasets": len(result.get("datasets") or []),
+                "artifacts": len(result.get("artifacts") or []),
+                "audits": result.get("auditDeleted") or 0,
+                "files": deleted_files,
+            },
+        )
+        return {
+            "purged": {
+                "historyTasks": len(result.get("historyTaskIds") or []),
+                "datasets": len(result.get("datasets") or []),
+                "artifacts": len(result.get("artifacts") or []),
+                "audits": result.get("auditDeleted") or 0,
+                "files": deleted_files,
+            },
+            "policy": {
+                "historyDays": retention_history_days,
+                "datasetDays": retention_dataset_days,
+                "artifactDays": retention_artifact_days,
+                "auditDays": retention_audit_days,
+            },
+        }
+
 
     return app

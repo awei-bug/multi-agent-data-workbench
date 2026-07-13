@@ -93,6 +93,12 @@ def main() -> None:
         oidc_authorize_url=settings.oidc_authorize_url,
         oidc_token_url=settings.oidc_token_url,
         oidc_userinfo_url=settings.oidc_userinfo_url,
+        export_watermark_enabled=settings.export_watermark_enabled,
+        export_mask_sensitive=settings.export_mask_sensitive,
+        retention_history_days=settings.retention_history_days,
+        retention_dataset_days=settings.retention_dataset_days,
+        retention_artifact_days=settings.retention_artifact_days,
+        retention_audit_days=settings.retention_audit_days,
     )
     uvicorn.run(app, host=settings.host, port=settings.port)
 

@@ -68,6 +68,12 @@ class RuntimeSettings:
     oidc_authorize_url: str
     oidc_token_url: str
     oidc_userinfo_url: str
+    export_watermark_enabled: bool
+    export_mask_sensitive: bool
+    retention_history_days: int
+    retention_dataset_days: int
+    retention_artifact_days: int
+    retention_audit_days: int
 
 
 def configure_logging(level: str, *, json_logs: bool = False) -> None:
@@ -162,4 +168,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         oidc_authorize_url=values.get("WORKSPACE_OIDC_AUTHORIZE_URL", "").strip(),
         oidc_token_url=values.get("WORKSPACE_OIDC_TOKEN_URL", "").strip(),
         oidc_userinfo_url=values.get("WORKSPACE_OIDC_USERINFO_URL", "").strip(),
+        export_watermark_enabled=values.get("WORKSPACE_EXPORT_WATERMARK", "true").lower() != "false",
+        export_mask_sensitive=values.get("WORKSPACE_EXPORT_MASK_SENSITIVE", "true").lower() != "false",
+        retention_history_days=int(values.get("WORKSPACE_RETENTION_HISTORY_DAYS", "0")),
+        retention_dataset_days=int(values.get("WORKSPACE_RETENTION_DATASET_DAYS", "0")),
+        retention_artifact_days=int(values.get("WORKSPACE_RETENTION_ARTIFACT_DAYS", "0")),
+        retention_audit_days=int(values.get("WORKSPACE_RETENTION_AUDIT_DAYS", "0")),
     )

@@ -728,6 +728,92 @@ class TaskRepository:
         self._set_json(self._scoped_key("uploaded_files"), {"items": remaining})
         return target
 
+    def purge_expired_resources(
+        self,
+        *,
+        history_days: int = 0,
+        dataset_days: int = 0,
+        artifact_days: int = 0,
+        audit_days: int = 0,
+    ) -> dict:
+        """Delete expired scoped resources by retention policy (days <= 0 means keep forever)."""
+        from backend_py.compliance import is_expired
+
+        now = datetime.now(timezone.utc)
+        removed_history: list[str] = []
+        removed_datasets: list[dict] = []
+        removed_artifacts: list[dict] = []
+        removed_audits = 0
+
+        if history_days > 0:
+            for task in list(self.list_recent_tasks()):
+                if task.get("shared"):
+                    continue
+                stamp = (
+                    task.get("updatedAt")
+                    or task.get("createdAt")
+                    or task.get("savedAt")
+                    or task.get("time")
+                )
+                if is_expired(str(stamp) if stamp else None, retain_days=history_days, now=now):
+                    deleted = self.delete_history_task(str(task.get("id")))
+                    if deleted:
+                        removed_history.append(str(task.get("id")))
+
+        if dataset_days > 0:
+            for dataset in list(self.list_datasets()):
+                if dataset.get("shared"):
+                    continue
+                stamp = dataset.get("uploadedAt") or dataset.get("createdAt") or dataset.get("updatedAt")
+                if is_expired(str(stamp) if stamp else None, retain_days=dataset_days, now=now):
+                    deleted = self.delete_dataset(str(dataset.get("id")))
+                    if deleted:
+                        removed_datasets.append(deleted)
+
+        if artifact_days > 0:
+            artifacts = self._get_artifacts()
+            kept = []
+            for artifact in artifacts:
+                stamp = artifact.get("createdAt") or artifact.get("uploadedAt")
+                if is_expired(str(stamp) if stamp else None, retain_days=artifact_days, now=now):
+                    removed_artifacts.append(deepcopy(artifact))
+                else:
+                    kept.append(artifact)
+            self._set_json(self._scoped_key("artifacts"), {"items": kept})
+
+        if audit_days > 0:
+            # Audit purge is tenant/user scoped by payload fields.
+            tenant_id, owner_id = get_workspace_scope()
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    "SELECT id, payload, created_at, tenant_id, owner_id FROM audit_events"
+                ).fetchall()
+                for row in rows:
+                    event_id, payload_raw, created_at, row_tenant, row_owner = row
+                    try:
+                        payload = json.loads(payload_raw or "{}")
+                    except Exception:
+                        payload = {}
+                    event_tenant = row_tenant or payload.get("tenantId")
+                    event_owner = row_owner or payload.get("ownerId")
+                    if event_tenant != tenant_id or event_owner != owner_id:
+                        continue
+                    stamp = created_at or payload.get("createdAt")
+                    if is_expired(str(stamp) if stamp else None, retain_days=audit_days, now=now):
+                        connection.execute(
+                            f"DELETE FROM audit_events WHERE id = {self._placeholder()}",
+                            (event_id,),
+                        )
+                        removed_audits += 1
+                connection.commit()
+
+        return {
+            "historyTaskIds": removed_history,
+            "datasets": removed_datasets,
+            "artifacts": removed_artifacts,
+            "auditDeleted": removed_audits,
+        }
+
     def get_dataset(self, dataset_id: str) -> dict | None:
         uploaded = next((deepcopy(dataset) for dataset in self._get_uploaded_files() if dataset.get("id") == dataset_id), None)
         if uploaded:
@@ -910,7 +996,7 @@ class TaskRepository:
                     tasks.append(item)
         except Exception:
             pass
-        return deepcopy(sorted(tasks, key=lambda item: item["time"], reverse=True))
+        return deepcopy(sorted(tasks, key=lambda item: item.get("time") or item.get("updatedAt") or item.get("createdAt") or "", reverse=True))
 
     def get_task_detail(self, task_id: str) -> dict | None:
         payload = self._get_payload_by_id("history_tasks", task_id)

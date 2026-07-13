@@ -81,7 +81,7 @@ class WorkflowServiceTest(unittest.TestCase):
         self.assertEqual(updated["snapshot"]["nodes"][4]["status"], "success")
         self.assertEqual(updated["snapshot"]["nodes"][5]["status"], "running")
 
-    def test_model_failure_marks_current_node_failed(self) -> None:
+    def test_model_failure_keeps_deterministic_node_output(self) -> None:
         class BrokenChatClient:
             async def complete(self, prompt: str) -> str:
                 raise RuntimeError("model unavailable")
@@ -115,11 +115,12 @@ class WorkflowServiceTest(unittest.TestCase):
 
         updated = advance_workflow_with_model(task, BrokenChatClient())
 
-        self.assertEqual(updated["summary"], "draft")
-        self.assertEqual(updated["status"], "鎵ц澶辫触")
-        self.assertEqual(updated["snapshot"]["phase"], "failed")
-        self.assertEqual(updated["snapshot"]["nodes"][4]["status"], "failed")
-        self.assertIn("model unavailable", updated["snapshot"]["logMessage"])
+        self.assertNotEqual(updated["summary"], "draft")
+        self.assertEqual(updated["status"], "执行中")
+        self.assertEqual(updated["snapshot"]["phase"], "running")
+        self.assertEqual(updated["snapshot"]["nodes"][4]["status"], "success")
+        self.assertEqual(updated["snapshot"]["nodes"][5]["status"], "running")
+        self.assertIn("model unavailable", updated["artifacts"][-1]["warnings"][0])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from contextvars import ContextVar, Token
 from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -14,6 +16,20 @@ from backend_py.workflow_service import (
     apply_workflow_action as run_workflow_action,
     create_execution_log_entry,
 )
+
+_workspace_scope: ContextVar[tuple[str, str]] = ContextVar("workspace_scope", default=("local-tenant", "local-user"))
+
+
+def set_workspace_scope(tenant_id: str, owner_id: str) -> Token:
+    return _workspace_scope.set((tenant_id, owner_id))
+
+
+def reset_workspace_scope(token: Token) -> None:
+    _workspace_scope.reset(token)
+
+
+def get_workspace_scope() -> tuple[str, str]:
+    return _workspace_scope.get()
 
 
 def _make_idle_snapshot() -> dict:
@@ -166,12 +182,18 @@ def _is_postgres_dsn(value: str | None) -> bool:
 
 
 class TaskRepository:
-    def __init__(self, db_path: str | None = None, database_url: str | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | None = None,
+        database_url: str | None = None,
+        seed_demo_data: bool = True,
+    ) -> None:
         self.database_url = database_url
         self.db_path = Path(db_path) if db_path else None
         self.use_postgres = _is_postgres_dsn(database_url)
+        self._workflow_lock = threading.RLock()
         self._init_db()
-        self._ensure_seed_data()
+        self._ensure_seed_data(seed_demo_data)
 
     def _connect(self):
         if self.use_postgres:
@@ -202,16 +224,148 @@ class TaskRepository:
             f"ON CONFLICT({key_column}) DO UPDATE SET {value_column} = excluded.{value_column}"
         )
 
+    def _upsert_scoped_payload_sql(self, table: str) -> str:
+        if self.use_postgres:
+            return (
+                f"INSERT INTO {table}(id, tenant_id, owner_id, payload) VALUES(%s, %s, %s, %s) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "tenant_id = EXCLUDED.tenant_id, owner_id = EXCLUDED.owner_id, payload = EXCLUDED.payload"
+            )
+        return (
+            f"INSERT INTO {table}(id, tenant_id, owner_id, payload) VALUES(?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "tenant_id = excluded.tenant_id, owner_id = excluded.owner_id, payload = excluded.payload"
+        )
+
     def _init_db(self) -> None:
         with closing(self._connect()) as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            connection.execute("CREATE TABLE IF NOT EXISTS history_tasks (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-            connection.execute("CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             connection.execute(
-                "CREATE TABLE IF NOT EXISTS audit_events "
-                "(id TEXT PRIMARY KEY, action TEXT NOT NULL, target TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS history_tasks ("
+                "id TEXT PRIMARY KEY, "
+                "tenant_id TEXT NOT NULL DEFAULT 'local-tenant', "
+                "owner_id TEXT NOT NULL DEFAULT 'local-user', "
+                "payload TEXT NOT NULL"
+                ")"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS templates ("
+                "id TEXT PRIMARY KEY, "
+                "tenant_id TEXT NOT NULL DEFAULT 'local-tenant', "
+                "owner_id TEXT NOT NULL DEFAULT '__system__', "
+                "payload TEXT NOT NULL"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS audit_events ("
+                "id TEXT PRIMARY KEY, "
+                "action TEXT NOT NULL, "
+                "target TEXT NOT NULL, "
+                "payload TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "tenant_id TEXT NOT NULL DEFAULT 'local-tenant', "
+                "owner_id TEXT NOT NULL DEFAULT 'local-user'"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS users ("
+                "id TEXT PRIMARY KEY, "
+                "username TEXT NOT NULL UNIQUE, "
+                "password_hash TEXT NOT NULL, "
+                "tenant_id TEXT NOT NULL, "
+                "display_name TEXT NOT NULL, "
+                "role TEXT NOT NULL, "
+                "created_at TEXT NOT NULL"
+                ")"
+            )
+            self._ensure_scope_columns(connection)
             connection.commit()
+
+    def _table_columns(self, connection, table: str) -> set[str]:
+        if self.use_postgres:
+            rows = connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s",
+                (table,),
+            ).fetchall()
+            return {str(row[0]) for row in rows}
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        # sqlite pragma: (cid, name, type, notnull, dflt_value, pk)
+        return {str(row[1]) for row in rows}
+
+    def _ensure_scope_columns(self, connection) -> None:
+        history_columns = self._table_columns(connection, "history_tasks")
+        if "tenant_id" not in history_columns:
+            connection.execute("ALTER TABLE history_tasks ADD COLUMN tenant_id TEXT")
+        if "owner_id" not in history_columns:
+            connection.execute("ALTER TABLE history_tasks ADD COLUMN owner_id TEXT")
+
+        template_columns = self._table_columns(connection, "templates")
+        if "tenant_id" not in template_columns:
+            connection.execute("ALTER TABLE templates ADD COLUMN tenant_id TEXT")
+        if "owner_id" not in template_columns:
+            connection.execute("ALTER TABLE templates ADD COLUMN owner_id TEXT")
+
+        audit_columns = self._table_columns(connection, "audit_events")
+        if "tenant_id" not in audit_columns:
+            connection.execute("ALTER TABLE audit_events ADD COLUMN tenant_id TEXT")
+        if "owner_id" not in audit_columns:
+            connection.execute("ALTER TABLE audit_events ADD COLUMN owner_id TEXT")
+
+        # Best-effort indexes for both SQLite bootstrap and Postgres runtime.
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_history_tasks_scope ON history_tasks(tenant_id, owner_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_templates_scope ON templates(tenant_id, owner_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_audit_events_scope_created ON audit_events(tenant_id, owner_id, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_audit_events_action ON audit_events(action)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_users_tenant_id ON users(tenant_id)"
+        )
+
+        # Backfill missing scope values from payload JSON when present.
+        for table in ("history_tasks", "templates"):
+            rows = connection.execute(f"SELECT id, payload, tenant_id, owner_id FROM {table}").fetchall()
+            for row in rows:
+                row_id, payload_raw, tenant_id, owner_id = row[0], row[1], row[2], row[3]
+                if tenant_id and owner_id:
+                    continue
+                try:
+                    payload = json.loads(payload_raw or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                next_tenant = tenant_id or payload.get("tenantId") or "local-tenant"
+                next_owner = owner_id or payload.get("ownerId") or ("__system__" if table == "templates" else "local-user")
+                connection.execute(
+                    f"UPDATE {table} SET tenant_id = {self._placeholder()}, owner_id = {self._placeholder()} "
+                    f"WHERE id = {self._placeholder()}",
+                    (str(next_tenant), str(next_owner), row_id),
+                )
+
+        audit_rows = connection.execute(
+            "SELECT id, payload, tenant_id, owner_id FROM audit_events"
+        ).fetchall()
+        for row in audit_rows:
+            row_id, payload_raw, tenant_id, owner_id = row[0], row[1], row[2], row[3]
+            if tenant_id and owner_id:
+                continue
+            try:
+                payload = json.loads(payload_raw or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            next_tenant = tenant_id or payload.get("tenantId") or "local-tenant"
+            next_owner = owner_id or payload.get("ownerId") or "local-user"
+            connection.execute(
+                f"UPDATE audit_events SET tenant_id = {self._placeholder()}, owner_id = {self._placeholder()} "
+                f"WHERE id = {self._placeholder()}",
+                (str(next_tenant), str(next_owner), row_id),
+            )
 
     def _get_json(self, key: str) -> dict | None:
         with closing(self._connect()) as connection:
@@ -221,88 +375,343 @@ class TaskRepository:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def _scoped_key(self, key: str) -> str:
+        tenant_id, owner_id = get_workspace_scope()
+        return f"{key}:{tenant_id}:{owner_id}"
+
     def _set_json(self, key: str, value: dict) -> None:
         with closing(self._connect()) as connection:
             connection.execute(self._upsert_sql("kv_store", "key"), (key, json.dumps(value, ensure_ascii=False)))
             connection.commit()
 
-    def _list_payloads(self, table: str) -> list[dict]:
-        with closing(self._connect()) as connection:
-            rows = connection.execute(f"SELECT payload FROM {table}").fetchall()
-        return [self._normalize_task_payload(json.loads(row[0])) for row in rows]
+    def _scope_payload(self, payload: dict, include_owner: bool = True) -> dict:
+        scoped = deepcopy(payload)
+        tenant_id, owner_id = get_workspace_scope()
+        scoped["tenantId"] = tenant_id
+        if include_owner:
+            scoped["ownerId"] = owner_id
+        return scoped
 
-    def _save_payload(self, table: str, identifier: str, payload: dict) -> None:
+    def _payload_row_id(self, identifier: str, include_owner: bool = True) -> str:
+        tenant_id, owner_id = get_workspace_scope()
+        if include_owner:
+            return f"{tenant_id}:{owner_id}:{identifier}"
+        return f"{tenant_id}:system:{identifier}"
+
+    def _scope_slug(self) -> str:
+        tenant_id, owner_id = get_workspace_scope()
+        raw = f"{tenant_id}-{owner_id}"
+        return "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in raw).strip("-") or "workspace"
+
+    def _matches_scope(self, payload: dict, include_owner: bool = True) -> bool:
+        tenant_id, owner_id = get_workspace_scope()
+        if payload.get("tenantId") != tenant_id:
+            return False
+        if include_owner and payload.get("ownerId") != owner_id:
+            return False
+        return True
+
+    def _list_payloads(self, table: str, include_owner: bool = True) -> list[dict]:
+        tenant_id, owner_id = get_workspace_scope()
+        placeholder = self._placeholder()
         with closing(self._connect()) as connection:
-            connection.execute(self._upsert_sql(table, "id"), (identifier, json.dumps(payload, ensure_ascii=False)))
+            if include_owner:
+                rows = connection.execute(
+                    f"SELECT payload FROM {table} "
+                    f"WHERE tenant_id = {placeholder} AND owner_id = {placeholder}",
+                    (tenant_id, owner_id),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    f"SELECT payload FROM {table} "
+                    f"WHERE tenant_id = {placeholder} AND owner_id = {placeholder}",
+                    (tenant_id, "__system__"),
+                ).fetchall()
+        payloads = [json.loads(row[0]) for row in rows]
+        # Keep payload-level scope check as defense in depth for legacy rows.
+        scoped = [payload for payload in payloads if self._matches_scope(payload, include_owner=include_owner)]
+        return [self._normalize_task_payload(payload) for payload in scoped]
+
+    def _save_payload(self, table: str, identifier: str, payload: dict, include_owner: bool = True) -> None:
+        tenant_id, owner_id = get_workspace_scope()
+        scoped_payload = self._scope_payload(payload, include_owner=include_owner)
+        row_owner = owner_id if include_owner else "__system__"
+        with closing(self._connect()) as connection:
+            connection.execute(
+                self._upsert_scoped_payload_sql(table),
+                (
+                    self._payload_row_id(identifier, include_owner=include_owner),
+                    tenant_id,
+                    row_owner,
+                    json.dumps(scoped_payload, ensure_ascii=False),
+                ),
+            )
             connection.commit()
 
+    def _delete_payload(self, table: str, identifier: str, include_owner: bool = True) -> None:
+        target = self._get_payload_by_id(table, identifier, include_owner=include_owner)
+        if not target:
+            return
+        tenant_id, owner_id = get_workspace_scope()
+        row_owner = owner_id if include_owner else "__system__"
+        placeholder = self._placeholder()
+        with closing(self._connect()) as connection:
+            connection.execute(
+                f"DELETE FROM {table} WHERE id = {placeholder} AND tenant_id = {placeholder} AND owner_id = {placeholder}",
+                (self._payload_row_id(identifier, include_owner=include_owner), tenant_id, row_owner),
+            )
+            connection.commit()
+
+    def _get_payload_by_id(self, table: str, identifier: str, include_owner: bool = True) -> dict | None:
+        tenant_id, owner_id = get_workspace_scope()
+        row_owner = owner_id if include_owner else "__system__"
+        placeholder = self._placeholder()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"SELECT payload FROM {table} "
+                f"WHERE id = {placeholder} AND tenant_id = {placeholder} AND owner_id = {placeholder}",
+                (self._payload_row_id(identifier, include_owner=include_owner), tenant_id, row_owner),
+            ).fetchone()
+        if not row:
+            return None
+        payload = json.loads(row[0])
+        if not self._matches_scope(payload, include_owner=include_owner):
+            return None
+        return payload
+
     def add_audit_event(self, action: str, target: str, payload: dict | None = None) -> dict:
+        tenant_id, owner_id = get_workspace_scope()
         event = {
             "id": str(uuid4()),
             "action": action,
             "target": target,
             "payload": payload or {},
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "tenantId": tenant_id,
+            "ownerId": owner_id,
         }
         placeholder = self._placeholder()
         with closing(self._connect()) as connection:
             connection.execute(
-                f"INSERT INTO audit_events(id, action, target, payload, created_at) "
-                f"VALUES({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
+                f"INSERT INTO audit_events(id, action, target, payload, created_at, tenant_id, owner_id) "
+                f"VALUES({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
                 (
                     event["id"],
                     event["action"],
                     event["target"],
-                    json.dumps(event["payload"], ensure_ascii=False),
+                    json.dumps(event, ensure_ascii=False),
                     event["createdAt"],
+                    tenant_id,
+                    owner_id,
                 ),
             )
             connection.commit()
         return deepcopy(event)
 
-    def list_audit_events(self, limit: int = 50) -> list[dict]:
+    def count_audit_events(self) -> int:
+        tenant_id, owner_id = get_workspace_scope()
         placeholder = self._placeholder()
         with closing(self._connect()) as connection:
-            rows = connection.execute(
-                f"SELECT id, action, target, payload, created_at FROM audit_events ORDER BY created_at DESC LIMIT {placeholder}",
-                (limit,),
-            ).fetchall()
-        return [
-            {
-                "id": row[0],
-                "action": row[1],
-                "target": row[2],
-                "payload": json.loads(row[3]),
-                "createdAt": row[4],
-            }
-            for row in rows
-        ]
+            row = connection.execute(
+                f"SELECT COUNT(*) FROM audit_events WHERE tenant_id = {placeholder} AND owner_id = {placeholder}",
+                (tenant_id, owner_id),
+            ).fetchone()
+        return int(row[0] if row else 0)
 
-    def _ensure_seed_data(self) -> None:
-        if not self._get_json("active_task"):
-            self._set_json("active_task", _default_active_task())
-        if not self._get_json("meta"):
-            self._set_json("meta", {"saved_task_counter": 1, "saved_template_counter": 1, "active_task_history_id": None})
-        if not self._list_payloads("history_tasks"):
+    def list_audit_events(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        tenant_id, owner_id = get_workspace_scope()
+        placeholder = self._placeholder()
+        safe_limit = max(1, int(limit))
+        safe_offset = max(0, int(offset))
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT id, action, target, payload, created_at, tenant_id, owner_id "
+                f"FROM audit_events WHERE tenant_id = {placeholder} AND owner_id = {placeholder} "
+                f"ORDER BY created_at DESC LIMIT {placeholder} OFFSET {placeholder}",
+                (tenant_id, owner_id, safe_limit, safe_offset),
+            ).fetchall()
+        events = []
+        for row in rows:
+            payload = json.loads(row[3]) if row[3] else {}
+            events.append(
+                {
+                    "id": row[0],
+                    "action": row[1],
+                    "target": row[2],
+                    "createdAt": row[4],
+                    "tenantId": row[5] or payload.get("tenantId"),
+                    "ownerId": row[6] or payload.get("ownerId"),
+                    **payload,
+                }
+            )
+        return events
+
+    def _ensure_seed_data(self, seed_demo_data: bool) -> None:
+        if not self._get_json(self._scoped_key("active_task")):
+            self._set_json(self._scoped_key("active_task"), _default_active_task())
+        if not self._get_json(self._scoped_key("meta")):
+            self._set_json(self._scoped_key("meta"), {"saved_task_counter": 1, "saved_template_counter": 1, "active_task_history_id": None})
+        if seed_demo_data and not self._list_payloads("history_tasks"):
             for task in _seed_recent_tasks():
                 self._save_payload("history_tasks", task["id"], task)
-        if not self._list_payloads("templates"):
+        if seed_demo_data and not self._list_payloads("templates", include_owner=False):
             for template in _seed_templates():
-                self._save_payload("templates", template["id"], template)
+                self._save_payload("templates", template["id"], template, include_owner=False)
 
     def _get_meta(self) -> dict:
-        return self._get_json("meta") or {
+        return self._get_json(self._scoped_key("meta")) or {
             "saved_task_counter": 1,
             "saved_template_counter": 1,
             "active_task_history_id": None,
         }
 
     def _set_meta(self, meta: dict) -> None:
-        self._set_json("meta", meta)
+        self._set_json(self._scoped_key("meta"), meta)
+
+    def _get_uploaded_files(self) -> list[dict]:
+        return (self._get_json(self._scoped_key("uploaded_files")) or {"items": []}).get("items", [])
+
+    def _get_artifacts(self) -> list[dict]:
+        return (self._get_json(self._scoped_key("artifacts")) or {"items": []}).get("items", [])
+
+    def add_artifact(self, artifact: dict) -> dict:
+        artifacts = self._get_artifacts()
+        artifacts.insert(0, deepcopy(artifact))
+        self._set_json(self._scoped_key("artifacts"), {"items": artifacts})
+        return deepcopy(artifact)
+
+    def delete_artifacts_for_task(self, task_id: str) -> list[dict]:
+        artifacts = self._get_artifacts()
+        removed = [deepcopy(artifact) for artifact in artifacts if artifact.get("taskId") == task_id]
+        kept = [artifact for artifact in artifacts if artifact.get("taskId") != task_id]
+        self._set_json(self._scoped_key("artifacts"), {"items": kept})
+        return removed
+
+    def list_artifacts(self, task_id: str | None = None) -> list[dict]:
+        artifacts = self._get_artifacts()
+        if task_id:
+            artifacts = [artifact for artifact in artifacts if artifact.get("taskId") == task_id]
+        return deepcopy(artifacts)
+
+    def get_artifact(self, artifact_id: str) -> dict | None:
+        return next((deepcopy(artifact) for artifact in self._get_artifacts() if artifact.get("id") == artifact_id), None)
+
+    def _dataset_from_data_source(self, identifier: str, data_source: dict, used_by: str) -> dict:
+        return {
+            "id": identifier,
+            "name": data_source.get("fileName", used_by),
+            "fileName": data_source.get("fileName", used_by),
+            "kind": data_source.get("kind", "csv"),
+            "formatLabel": data_source.get("formatLabel"),
+            "columnCount": data_source.get("columnCount", 0),
+            "rowCount": data_source.get("rowCount", 0),
+            "columns": data_source.get("columns", []),
+            "previewRows": data_source.get("previewRows", []),
+            "analysisRows": data_source.get("analysisRows", []),
+            "textPreview": data_source.get("textPreview", ""),
+            "fullText": data_source.get("fullText", ""),
+            "fieldMappings": data_source.get("fieldMappings", []),
+            "profile": data_source.get("profile", {}),
+            "analysisScope": data_source.get("analysisScope", {}),
+            "storageKey": data_source.get("storageKey", ""),
+            "originalMimeType": data_source.get("originalMimeType", "application/octet-stream"),
+            "originalFileSize": data_source.get("originalFileSize", 0),
+            "usedBy": used_by,
+            "uploadedAt": data_source.get("uploadedAt", ""),
+            "sourceType": data_source.get("sourceType", "upload"),
+            "connectorType": data_source.get("connectorType"),
+            "connectionId": data_source.get("connectionId"),
+        }
+
+    def add_uploaded_dataset(self, data_source: dict) -> dict:
+        uploaded_files = [item for item in self._get_uploaded_files() if item.get("name") != data_source.get("fileName")]
+        used_by = "外部连接导入" if data_source.get("sourceType") == "connector" else "已上传文件"
+        dataset = self._dataset_from_data_source(
+            f"uploaded-file-{uuid4()}",
+            {**data_source, "uploadedAt": datetime.now(timezone.utc).isoformat()},
+            used_by,
+        )
+        uploaded_files.insert(0, dataset)
+        self._set_json(self._scoped_key("uploaded_files"), {"items": uploaded_files})
+        return deepcopy(dataset)
+
+    def delete_dataset(self, dataset_id: str) -> dict | None:
+        uploaded_files = self._get_uploaded_files()
+        target = next((deepcopy(dataset) for dataset in uploaded_files if dataset.get("id") == dataset_id), None)
+        if not target:
+            return None
+        remaining = [dataset for dataset in uploaded_files if dataset.get("id") != dataset_id]
+        self._set_json(self._scoped_key("uploaded_files"), {"items": remaining})
+        return target
+
+    def get_dataset(self, dataset_id: str) -> dict | None:
+        uploaded = next((deepcopy(dataset) for dataset in self._get_uploaded_files() if dataset.get("id") == dataset_id), None)
+        if uploaded:
+            return uploaded
+        for task in [self.get_active_task(), *self.list_recent_tasks()]:
+            data_source = task.get("dataSource")
+            if data_source and task.get("id") == dataset_id:
+                return self._dataset_from_data_source(task["id"], data_source, task["name"])
+        return None
+
+    def active_task_uses_dataset(self, dataset_id: str) -> bool:
+        active = self.get_active_task()
+        data_source = active.get("dataSource") or {}
+        return str(data_source.get("id") or "") == dataset_id
+
+    def _get_connections(self) -> list[dict]:
+        return (self._get_json(self._scoped_key("connections")) or {"items": []}).get("items", [])
+
+    def list_connections(self) -> list[dict]:
+        return deepcopy(self._get_connections())
+
+    def get_connection(self, connection_id: str) -> dict | None:
+        return next((deepcopy(item) for item in self._get_connections() if item.get("id") == connection_id), None)
+
+    def save_connection(self, connection: dict) -> dict:
+        items = self._get_connections()
+        connection_id = connection.get("id") or f"conn-{uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        tenant_id, owner_id = get_workspace_scope()
+        payload = {
+            **deepcopy(connection),
+            "id": connection_id,
+            "tenantId": tenant_id,
+            "ownerId": owner_id,
+            "updatedAt": now,
+            "createdAt": connection.get("createdAt") or now,
+        }
+        next_items = [item for item in items if item.get("id") != connection_id]
+        next_items.insert(0, payload)
+        self._set_json(self._scoped_key("connections"), {"items": next_items})
+        return deepcopy(payload)
+
+    def delete_connection(self, connection_id: str) -> dict | None:
+        items = self._get_connections()
+        target = next((deepcopy(item) for item in items if item.get("id") == connection_id), None)
+        if not target:
+            return None
+        remaining = [item for item in items if item.get("id") != connection_id]
+        self._set_json(self._scoped_key("connections"), {"items": remaining})
+        return target
 
     def _normalize_task_payload(self, payload: dict) -> dict:
         task = deepcopy(payload)
         task.setdefault("executionLog", _default_execution_log())
+        task.setdefault(
+            "execution",
+            {
+                "mode": "async",
+                "status": "idle",
+                "jobId": None,
+                "action": None,
+                "submittedAt": None,
+                "startedAt": None,
+                "finishedAt": None,
+                "lastError": None,
+                "steps": 0,
+            },
+        )
         return task
 
     def _append_execution_log(self, task: dict, kind: str, message: str) -> dict:
@@ -311,29 +720,54 @@ class TaskRepository:
         return next_task
 
     def get_active_task(self) -> dict:
-        return deepcopy(self._normalize_task_payload(self._get_json("active_task") or _default_active_task()))
+        return deepcopy(self._normalize_task_payload(self._get_json(self._scoped_key("active_task")) or _default_active_task()))
 
     def update_active_task(self, update: dict) -> dict:
         active_task = self.get_active_task()
         active_task.update(deepcopy(update))
         active_task = self._normalize_task_payload(active_task)
-        self._set_json("active_task", active_task)
+        self._set_json(self._scoped_key("active_task"), active_task)
         return self.get_active_task()
 
-    def apply_workflow_action(self, action: str) -> dict:
-        active_task = run_workflow_action(self.get_active_task(), action)
-        active_task = self._append_execution_log(active_task, "action", action)
-        self._set_json("active_task", active_task)
-        return self.get_active_task()
+    def apply_workflow_action(self, action: str, chat_client=None, *, run_to_completion: bool = True) -> dict:
+        with self._workflow_lock:
+            active_task = run_workflow_action(self.get_active_task(), action)
+            active_task = self._append_execution_log(active_task, "action", action)
+            self._set_json(self._scoped_key("active_task"), active_task)
+            if chat_client is not None and run_to_completion and action in {"start", "resume", "retry", "retry_current"}:
+                return self.run_workflow_until_idle(chat_client)
+            return self.get_active_task()
+
+    def set_execution_meta(self, execution: dict) -> dict:
+        with self._workflow_lock:
+            active_task = self.get_active_task()
+            current = dict(active_task.get("execution") or {})
+            current.update(execution)
+            active_task["execution"] = current
+            self._set_json(self._scoped_key("active_task"), active_task)
+            return self.get_active_task()
 
     def advance_workflow(self, chat_client) -> dict:
-        active_task = advance_workflow_with_model(self.get_active_task(), chat_client)
-        active_task = self._append_execution_log(active_task, "advance", active_task["snapshot"]["logMessage"])
-        self._set_json("active_task", active_task)
-        return self.get_active_task()
+        with self._workflow_lock:
+            active_task = self.get_active_task()
+            # Do not advance after terminal control actions.
+            if active_task.get("snapshot", {}).get("phase") in {"stopped", "paused", "failed", "completed", "needs_review"}:
+                return active_task
+            active_task = advance_workflow_with_model(active_task, chat_client)
+            active_task = self._append_execution_log(active_task, "advance", active_task["snapshot"]["logMessage"])
+            self._set_json(self._scoped_key("active_task"), active_task)
+            return self.get_active_task()
+
+    def run_workflow_until_idle(self, chat_client, max_steps: int = 12) -> dict:
+        task = self.get_active_task()
+        steps = 0
+        while task.get("snapshot", {}).get("phase") == "running" and steps < max_steps:
+            task = self.advance_workflow(chat_client)
+            steps += 1
+        return task
 
     def reset_active_task(self) -> dict:
-        self._set_json("active_task", _default_active_task())
+        self._set_json(self._scoped_key("active_task"), _default_active_task())
         meta = self._get_meta()
         meta["active_task_history_id"] = None
         self._set_meta(meta)
@@ -347,7 +781,34 @@ class TaskRepository:
             create_execution_log_entry("system", "任务已初始化"),
             create_execution_log_entry("action", "基于回放新建"),
         ]
-        self._set_json("active_task", active_task)
+        self._set_json(self._scoped_key("active_task"), active_task)
+        meta = self._get_meta()
+        meta["active_task_history_id"] = None
+        self._set_meta(meta)
+        return self.get_active_task()
+
+    def load_history_task_into_active(self, task_id: str) -> dict | None:
+        task = self.get_task_detail(task_id)
+        if not task:
+            return None
+        task["id"] = "workspace-active-session"
+        task["mode"] = "replay"
+        task["status"] = f"回放模式 - {task.get('status', '已完成')}"
+        self._set_json(self._scoped_key("active_task"), task)
+        meta = self._get_meta()
+        meta["active_task_history_id"] = task_id
+        self._set_meta(meta)
+        return self.get_active_task()
+
+    def create_task_from_template(self, template_id: str) -> dict | None:
+        template = next((item for item in self.list_templates() if item.get("id") == template_id), None)
+        if not template:
+            return None
+        task = _default_active_task(template.get("request", ""))
+        task["name"] = template.get("name", task["name"])
+        task["summary"] = template.get("summary", task["summary"])
+        task["executionLog"] = [create_execution_log_entry("system", "已从模板创建新任务")]
+        self._set_json(self._scoped_key("active_task"), task)
         meta = self._get_meta()
         meta["active_task_history_id"] = None
         self._set_meta(meta)
@@ -358,14 +819,25 @@ class TaskRepository:
         return deepcopy(sorted(tasks, key=lambda item: item["time"], reverse=True))
 
     def get_task_detail(self, task_id: str) -> dict | None:
-        for task in self._list_payloads("history_tasks"):
-            if task["id"] == task_id:
-                return deepcopy(task)
-        return None
+        payload = self._get_payload_by_id("history_tasks", task_id)
+        if not payload:
+            return None
+        return deepcopy(self._normalize_task_payload(payload))
+
+    def delete_history_task(self, task_id: str) -> dict | None:
+        task = self.get_task_detail(task_id)
+        if not task:
+            return None
+        self._delete_payload("history_tasks", task_id)
+        meta = self._get_meta()
+        if meta.get("active_task_history_id") == task_id:
+            meta["active_task_history_id"] = None
+            self._set_meta(meta)
+        return task
 
     def save_active_task_to_history(self) -> dict:
         meta = self._get_meta()
-        saved_id = meta["active_task_history_id"] or f"saved-session-{meta['saved_task_counter']}"
+        saved_id = meta["active_task_history_id"] or f"saved-session-{self._scope_slug()}-{meta['saved_task_counter']}"
         saved_task = self.get_active_task()
         saved_task["id"] = saved_id
         saved_task["time"] = f"今天 16:{meta['saved_task_counter']:02d}"
@@ -380,38 +852,23 @@ class TaskRepository:
         return deepcopy(saved_task)
 
     def list_templates(self) -> list[dict]:
-        templates = self._list_payloads("templates")
-        workspace_templates = [item for item in templates if item.get("source") == "workspace"]
-        system_templates = [item for item in templates if item.get("source") != "workspace"]
+        workspace_templates = [item for item in self._list_payloads("templates") if item.get("source") == "workspace"]
+        system_templates = [item for item in self._list_payloads("templates", include_owner=False) if item.get("source") != "workspace"]
         return deepcopy(workspace_templates + system_templates)
 
     def list_datasets(self) -> list[dict]:
-        datasets = []
+        datasets = self._get_uploaded_files()
+        seen_sources = set()
+        for dataset in datasets:
+            if dataset.get("name"):
+                seen_sources.add(dataset["name"])
         for task in [self.get_active_task(), *self.list_recent_tasks()]:
             data_source = task.get("dataSource")
-            if data_source:
-                datasets.append(
-                    {
-                        "id": task["id"],
-                        "name": data_source.get("fileName", task["name"]),
-                        "kind": data_source.get("kind", "csv"),
-                        "columnCount": data_source.get("columnCount", 0),
-                        "rowCount": data_source.get("rowCount", 0),
-                        "usedBy": task["name"],
-                    }
-                )
-        if datasets:
-            return deepcopy(datasets)
-        return [
-            {
-                "id": "sample-sales-dataset",
-                "name": "示例销售数据集",
-                "kind": "csv",
-                "columnCount": 3,
-                "rowCount": 12,
-                "usedBy": "多 Agent 主流程演示",
-            }
-        ]
+            file_name = data_source.get("fileName") if data_source else None
+            if data_source and file_name and file_name not in seen_sources:
+                seen_sources.add(file_name)
+                datasets.append(self._dataset_from_data_source(task["id"], data_source, task["name"]))
+        return deepcopy(datasets)
 
     def list_reports(self) -> list[dict]:
         reports = []
@@ -470,9 +927,137 @@ class TaskRepository:
         self._set_meta(meta)
         return deepcopy(template)
 
+    def create_user(
+        self,
+        *,
+        username: str,
+        password_hash: str,
+        tenant_id: str,
+        display_name: str,
+        role: str = "analyst",
+        user_id: str | None = None,
+    ) -> dict:
+        user = {
+            "id": user_id or f"user-{uuid4().hex[:12]}",
+            "username": username,
+            "passwordHash": password_hash,
+            "tenantId": tenant_id,
+            "displayName": display_name,
+            "role": role,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        with closing(self._connect()) as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO users(id, username, password_hash, tenant_id, display_name, role, created_at) "
+                    f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                    f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                    (
+                        user["id"],
+                        user["username"],
+                        user["passwordHash"],
+                        user["tenantId"],
+                        user["displayName"],
+                        user["role"],
+                        user["createdAt"],
+                    ),
+                )
+                connection.commit()
+            except Exception as error:
+                message = str(error).lower()
+                if "unique" in message or "duplicate" in message:
+                    raise ValueError("username already exists") from error
+                raise
+        return user
 
-def create_repository(db_path: str | None = None, database_url: str | None = None) -> TaskRepository:
-    return TaskRepository(db_path=db_path, database_url=database_url)
+    def get_user_by_username(self, username: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id, username, password_hash, tenant_id, display_name, role, created_at "
+                f"FROM users WHERE username = {self._placeholder()}",
+                (username,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "username": row[1],
+            "passwordHash": row[2],
+            "tenantId": row[3],
+            "displayName": row[4],
+            "role": row[5],
+            "createdAt": row[6],
+        }
+
+    def get_user_by_id(self, user_id: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id, username, password_hash, tenant_id, display_name, role, created_at "
+                f"FROM users WHERE id = {self._placeholder()}",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "username": row[1],
+            "passwordHash": row[2],
+            "tenantId": row[3],
+            "displayName": row[4],
+            "role": row[5],
+            "createdAt": row[6],
+        }
+
+    def count_users(self) -> int:
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM users").fetchone()
+        return int(row[0] if row else 0)
+
+    def list_users(self, tenant_id: str | None = None) -> list[dict]:
+        with closing(self._connect()) as connection:
+            if tenant_id:
+                rows = connection.execute(
+                    "SELECT id, username, tenant_id, display_name, role, created_at "
+                    f"FROM users WHERE tenant_id = {self._placeholder()} ORDER BY created_at ASC",
+                    (tenant_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT id, username, tenant_id, display_name, role, created_at "
+                    "FROM users ORDER BY created_at ASC"
+                ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "username": row[1],
+                "tenantId": row[2],
+                "displayName": row[3],
+                "role": row[4],
+                "createdAt": row[5],
+            }
+            for row in rows
+        ]
+
+    def update_user_role(self, user_id: str, role: str) -> dict | None:
+        user = self.get_user_by_id(user_id)
+        if not user:
+            return None
+        with closing(self._connect()) as connection:
+            connection.execute(
+                f"UPDATE users SET role = {self._placeholder()} WHERE id = {self._placeholder()}",
+                (role, user_id),
+            )
+            connection.commit()
+        user["role"] = role
+        return user
+
+
+def create_repository(
+    db_path: str | None = None,
+    database_url: str | None = None,
+    seed_demo_data: bool = True,
+) -> TaskRepository:
+    return TaskRepository(db_path=db_path, database_url=database_url, seed_demo_data=seed_demo_data)
 
 
 InMemoryTaskRepository = TaskRepository

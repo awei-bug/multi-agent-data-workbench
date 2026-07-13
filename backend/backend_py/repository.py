@@ -278,6 +278,39 @@ class TaskRepository:
                 "created_at TEXT NOT NULL"
                 ")"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS organizations ("
+                "id TEXT PRIMARY KEY, "
+                "tenant_id TEXT NOT NULL, "
+                "name TEXT NOT NULL, "
+                "slug TEXT NOT NULL, "
+                "owner_user_id TEXT NOT NULL, "
+                "created_at TEXT NOT NULL"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS organization_members ("
+                "id TEXT PRIMARY KEY, "
+                "org_id TEXT NOT NULL, "
+                "user_id TEXT NOT NULL, "
+                "role TEXT NOT NULL, "
+                "status TEXT NOT NULL, "
+                "joined_at TEXT NOT NULL"
+                ")"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS organization_invites ("
+                "id TEXT PRIMARY KEY, "
+                "org_id TEXT NOT NULL, "
+                "username TEXT NOT NULL, "
+                "role TEXT NOT NULL, "
+                "token TEXT NOT NULL UNIQUE, "
+                "status TEXT NOT NULL, "
+                "created_by TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "expires_at TEXT NOT NULL"
+                ")"
+            )
             self._ensure_scope_columns(connection)
             connection.commit()
 
@@ -327,6 +360,21 @@ class TaskRepository:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS ix_users_tenant_id ON users(tenant_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_organizations_tenant_id ON organizations(tenant_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_organization_members_user_id ON organization_members(user_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_organization_members_org_id ON organization_members(org_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_organization_invites_org_id ON organization_invites(org_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_organization_invites_username ON organization_invites(username)"
         )
 
         # Backfill missing scope values from payload JSON when present.
@@ -853,8 +901,17 @@ class TaskRepository:
 
     def list_templates(self) -> list[dict]:
         workspace_templates = [item for item in self._list_payloads("templates") if item.get("source") == "workspace"]
-        system_templates = [item for item in self._list_payloads("templates", include_owner=False) if item.get("source") != "workspace"]
-        return deepcopy(workspace_templates + system_templates)
+        system_templates = [
+            item
+            for item in self._list_payloads("templates", include_owner=False)
+            if item.get("source") not in {"workspace", "organization"}
+        ]
+        tenant_id, owner_id = get_workspace_scope()
+        org_ids = [item["id"] for item in self.list_organizations_for_user(owner_id, tenant_id)]
+        org_templates = self.list_org_templates(org_ids)
+        seen = {item.get("id") for item in workspace_templates + system_templates}
+        merged_org = [item for item in org_templates if item.get("id") not in seen]
+        return deepcopy(workspace_templates + merged_org + system_templates)
 
     def list_datasets(self) -> list[dict]:
         datasets = self._get_uploaded_files()
@@ -1050,6 +1107,317 @@ class TaskRepository:
             connection.commit()
         user["role"] = role
         return user
+
+    # ---- Organizations / collaboration ----
+
+    def _org_row_to_dict(self, row) -> dict:
+        return {
+            "id": row[0],
+            "tenantId": row[1],
+            "name": row[2],
+            "slug": row[3],
+            "ownerUserId": row[4],
+            "createdAt": row[5],
+        }
+
+    def create_organization(self, *, name: str, slug: str, owner_user_id: str, tenant_id: str | None = None) -> dict:
+        tenant = tenant_id or get_workspace_scope()[0]
+        org = {
+            "id": f"org-{uuid4().hex[:12]}",
+            "tenantId": tenant,
+            "name": name.strip(),
+            "slug": slug.strip().lower(),
+            "ownerUserId": owner_user_id,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        member_id = f"om-{uuid4().hex[:12]}"
+        joined_at = org["createdAt"]
+        with closing(self._connect()) as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO organizations(id, tenant_id, name, slug, owner_user_id, created_at) "
+                    f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                    f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                    (org["id"], org["tenantId"], org["name"], org["slug"], org["ownerUserId"], org["createdAt"]),
+                )
+                connection.execute(
+                    "INSERT INTO organization_members(id, org_id, user_id, role, status, joined_at) "
+                    f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                    f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                    (member_id, org["id"], owner_user_id, "owner", "active", joined_at),
+                )
+                connection.commit()
+            except Exception as error:
+                message = str(error).lower()
+                if "unique" in message or "duplicate" in message:
+                    raise ValueError("organization slug already exists in tenant") from error
+                raise
+        return org
+
+    def get_organization(self, org_id: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id, tenant_id, name, slug, owner_user_id, created_at "
+                f"FROM organizations WHERE id = {self._placeholder()}",
+                (org_id,),
+            ).fetchone()
+        return self._org_row_to_dict(row) if row else None
+
+    def list_organizations_for_user(self, user_id: str, tenant_id: str | None = None) -> list[dict]:
+        tenant = tenant_id or get_workspace_scope()[0]
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT o.id, o.tenant_id, o.name, o.slug, o.owner_user_id, o.created_at, m.role "
+                "FROM organizations o "
+                "JOIN organization_members m ON m.org_id = o.id "
+                f"WHERE m.user_id = {self._placeholder()} AND m.status = {self._placeholder()} "
+                f"AND o.tenant_id = {self._placeholder()} "
+                "ORDER BY o.created_at ASC",
+                (user_id, "active", tenant),
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = self._org_row_to_dict(row[:6])
+            item["memberRole"] = row[6]
+            items.append(item)
+        return items
+
+    def list_organization_members(self, org_id: str) -> list[dict]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT m.id, m.org_id, m.user_id, m.role, m.status, m.joined_at, "
+                "u.username, u.display_name "
+                "FROM organization_members m "
+                f"LEFT JOIN users u ON u.id = m.user_id "
+                f"WHERE m.org_id = {self._placeholder()} "
+                "ORDER BY m.joined_at ASC",
+                (org_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "orgId": row[1],
+                "userId": row[2],
+                "role": row[3],
+                "status": row[4],
+                "joinedAt": row[5],
+                "username": row[6] or row[2],
+                "displayName": row[7] or row[6] or row[2],
+            }
+            for row in rows
+        ]
+
+    def get_organization_member(self, org_id: str, user_id: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id, org_id, user_id, role, status, joined_at "
+                f"FROM organization_members WHERE org_id = {self._placeholder()} AND user_id = {self._placeholder()}",
+                (org_id, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "orgId": row[1],
+            "userId": row[2],
+            "role": row[3],
+            "status": row[4],
+            "joinedAt": row[5],
+        }
+
+    def update_organization_member_role(self, org_id: str, user_id: str, role: str) -> dict | None:
+        member = self.get_organization_member(org_id, user_id)
+        if not member:
+            return None
+        with closing(self._connect()) as connection:
+            connection.execute(
+                f"UPDATE organization_members SET role = {self._placeholder()} "
+                f"WHERE org_id = {self._placeholder()} AND user_id = {self._placeholder()}",
+                (role, org_id, user_id),
+            )
+            connection.commit()
+        member["role"] = role
+        return member
+
+    def remove_organization_member(self, org_id: str, user_id: str) -> bool:
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                f"DELETE FROM organization_members WHERE org_id = {self._placeholder()} AND user_id = {self._placeholder()}",
+                (org_id, user_id),
+            )
+            connection.commit()
+            return bool(getattr(cursor, "rowcount", 0))
+
+    def create_organization_invite(
+        self,
+        *,
+        org_id: str,
+        username: str,
+        role: str,
+        created_by: str,
+        expires_hours: int = 72,
+    ) -> dict:
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+        invite = {
+            "id": f"oi-{uuid4().hex[:12]}",
+            "orgId": org_id,
+            "username": username.strip().lower(),
+            "role": role,
+            "token": uuid4().hex,
+            "status": "pending",
+            "createdBy": created_by,
+            "createdAt": now.isoformat(),
+            "expiresAt": (now + timedelta(hours=expires_hours)).isoformat(),
+        }
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO organization_invites(id, org_id, username, role, token, status, created_by, created_at, expires_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                (
+                    invite["id"],
+                    invite["orgId"],
+                    invite["username"],
+                    invite["role"],
+                    invite["token"],
+                    invite["status"],
+                    invite["createdBy"],
+                    invite["createdAt"],
+                    invite["expiresAt"],
+                ),
+            )
+            connection.commit()
+        return invite
+
+    def list_organization_invites(self, org_id: str) -> list[dict]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT id, org_id, username, role, token, status, created_by, created_at, expires_at "
+                f"FROM organization_invites WHERE org_id = {self._placeholder()} ORDER BY created_at DESC",
+                (org_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "orgId": row[1],
+                "username": row[2],
+                "role": row[3],
+                "token": row[4],
+                "status": row[5],
+                "createdBy": row[6],
+                "createdAt": row[7],
+                "expiresAt": row[8],
+            }
+            for row in rows
+        ]
+
+    def get_invite_by_token(self, token: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id, org_id, username, role, token, status, created_by, created_at, expires_at "
+                f"FROM organization_invites WHERE token = {self._placeholder()}",
+                (token,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "orgId": row[1],
+            "username": row[2],
+            "role": row[3],
+            "token": row[4],
+            "status": row[5],
+            "createdBy": row[6],
+            "createdAt": row[7],
+            "expiresAt": row[8],
+        }
+
+    def accept_organization_invite(self, *, token: str, user_id: str, username: str) -> dict:
+        invite = self.get_invite_by_token(token)
+        if not invite:
+            raise ValueError("invite not found")
+        if invite["status"] != "pending":
+            raise ValueError("invite is not pending")
+        if invite["username"] != username.strip().lower():
+            raise ValueError("invite username mismatch")
+        expires_at = invite["expiresAt"]
+        if expires_at and expires_at < datetime.now(timezone.utc).isoformat():
+            raise ValueError("invite expired")
+        existing = self.get_organization_member(invite["orgId"], user_id)
+        if existing and existing.get("status") == "active":
+            # mark invite accepted anyway
+            with closing(self._connect()) as connection:
+                connection.execute(
+                    f"UPDATE organization_invites SET status = {self._placeholder()} WHERE id = {self._placeholder()}",
+                    ("accepted", invite["id"]),
+                )
+                connection.commit()
+            return existing
+
+        member = {
+            "id": f"om-{uuid4().hex[:12]}",
+            "orgId": invite["orgId"],
+            "userId": user_id,
+            "role": invite["role"] if invite["role"] in {"admin", "member", "viewer"} else "member",
+            "status": "active",
+            "joinedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO organization_members(id, org_id, user_id, role, status, joined_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                (member["id"], member["orgId"], member["userId"], member["role"], member["status"], member["joinedAt"]),
+            )
+            connection.execute(
+                f"UPDATE organization_invites SET status = {self._placeholder()} WHERE id = {self._placeholder()}",
+                ("accepted", invite["id"]),
+            )
+            connection.commit()
+        return member
+
+    def list_org_member_user_ids(self, org_id: str) -> list[str]:
+        members = self.list_organization_members(org_id)
+        return [item["userId"] for item in members if item.get("status") == "active"]
+
+    def share_template_to_org(self, *, org_id: str, template: dict) -> dict:
+        """Save a copy of template as organization-shared resource."""
+        tenant_id, _ = get_workspace_scope()
+        shared = deepcopy(template)
+        shared["id"] = f"org-template-{uuid4().hex[:10]}"
+        shared["source"] = "organization"
+        shared["orgId"] = org_id
+        shared["tag"] = shared.get("tag") or "组织共享"
+        shared["tenantId"] = tenant_id
+        shared["ownerId"] = f"__org__:{org_id}"
+        with closing(self._connect()) as connection:
+            connection.execute(
+                self._upsert_scoped_payload_sql("templates"),
+                (
+                    shared["id"],
+                    tenant_id,
+                    shared["ownerId"],
+                    json.dumps(shared, ensure_ascii=False),
+                ),
+            )
+            connection.commit()
+        return shared
+
+    def list_org_templates(self, org_ids: list[str]) -> list[dict]:
+        if not org_ids:
+            return []
+        tenant_id, _ = get_workspace_scope()
+        owners = [f"__org__:{org_id}" for org_id in org_ids]
+        placeholder = self._placeholder()
+        clauses = ", ".join(placeholder for _ in owners)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"SELECT payload FROM templates WHERE tenant_id = {placeholder} AND owner_id IN ({clauses})",
+                (tenant_id, *owners),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
 
 def create_repository(

@@ -121,6 +121,28 @@ class RoleUpdateRequest(BaseModel):
     role: str
 
 
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    slug: str | None = None
+
+
+class OrganizationInviteRequest(BaseModel):
+    username: str
+    role: str = "member"
+
+
+class OrganizationMemberRoleRequest(BaseModel):
+    role: str
+
+
+class OrganizationShareTemplateRequest(BaseModel):
+    templateId: str | None = None
+
+
+class InviteAcceptRequest(BaseModel):
+    token: str
+
+
 class ConnectionUpsertRequest(BaseModel):
     name: str
     connectorType: str
@@ -842,6 +864,166 @@ def create_app(
                 "permissions": permissions_for_role(updated["role"]),
             }
         }
+
+    def _require_org_manager(org_id: str, user_id: str) -> dict:
+        org = repo.get_organization(org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="organization not found")
+        member = repo.get_organization_member(org_id, user_id)
+        if not member or member.get("status") != "active":
+            raise HTTPException(status_code=403, detail="not an organization member")
+        if member.get("role") not in {"owner", "admin"}:
+            raise HTTPException(status_code=403, detail="organization admin role required")
+        return org
+
+    def _require_org_member(org_id: str, user_id: str) -> dict:
+        org = repo.get_organization(org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="organization not found")
+        member = repo.get_organization_member(org_id, user_id)
+        if not member or member.get("status") != "active":
+            raise HTTPException(status_code=403, detail="not an organization member")
+        return org
+
+    @app.get("/api/orgs")
+    def list_orgs(request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None and auth_required:
+            raise HTTPException(status_code=401, detail="authentication required")
+        user_id = auth_user.id if auth_user else default_user_id
+        tenant_id = auth_user.tenant_id if auth_user else default_tenant_id
+        items = repo.list_organizations_for_user(user_id, tenant_id)
+        return {"items": items}
+
+    @app.post("/api/orgs")
+    def create_org(payload: OrganizationCreateRequest, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        name = (payload.name or "").strip()
+        if len(name) < 2:
+            raise HTTPException(status_code=400, detail="organization name too short")
+        raw_slug = (payload.slug or name).strip().lower()
+        slug = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in raw_slug).strip("-_")
+        if len(slug) < 2:
+            raise HTTPException(status_code=400, detail="organization slug invalid")
+        try:
+            org = repo.create_organization(
+                name=name,
+                slug=slug,
+                owner_user_id=auth_user.id,
+                tenant_id=auth_user.tenant_id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        _audit(repo, "org.create", org["id"], {"name": name, "slug": slug})
+        return {"organization": org}
+
+    @app.get("/api/orgs/{org_id}")
+    def get_org(org_id: str, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        org = _require_org_member(org_id, auth_user.id)
+        members = repo.list_organization_members(org_id)
+        invites = repo.list_organization_invites(org_id)
+        return {
+            "organization": org,
+            "members": members,
+            "invites": [item for item in invites if item.get("status") == "pending"],
+            "me": repo.get_organization_member(org_id, auth_user.id),
+        }
+
+    @app.post("/api/orgs/{org_id}/invites")
+    def invite_org_member(org_id: str, payload: OrganizationInviteRequest, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        _require_org_manager(org_id, auth_user.id)
+        username = (payload.username or "").strip().lower()
+        if len(username) < 3:
+            raise HTTPException(status_code=400, detail="username invalid")
+        role = (payload.role or "member").strip().lower()
+        if role not in {"admin", "member", "viewer"}:
+            raise HTTPException(status_code=400, detail="role must be admin/member/viewer")
+        invite = repo.create_organization_invite(
+            org_id=org_id,
+            username=username,
+            role=role,
+            created_by=auth_user.id,
+        )
+        _audit(repo, "org.invite", org_id, {"username": username, "role": role, "inviteId": invite["id"]})
+        return {"invite": invite}
+
+    @app.post("/api/orgs/invites/accept")
+    def accept_org_invite(payload: InviteAcceptRequest, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        try:
+            member = repo.accept_organization_invite(
+                token=(payload.token or "").strip(),
+                user_id=auth_user.id,
+                username=auth_user.username,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        _audit(repo, "org.invite.accept", member.get("orgId", ""), {"userId": auth_user.id})
+        return {"member": member}
+
+    @app.patch("/api/orgs/{org_id}/members/{user_id}")
+    def update_org_member_role(org_id: str, user_id: str, payload: OrganizationMemberRoleRequest, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        org = _require_org_manager(org_id, auth_user.id)
+        role = (payload.role or "").strip().lower()
+        if role not in {"admin", "member", "viewer"}:
+            raise HTTPException(status_code=400, detail="role must be admin/member/viewer")
+        if user_id == org.get("ownerUserId"):
+            raise HTTPException(status_code=400, detail="cannot change organization owner role")
+        updated = repo.update_organization_member_role(org_id, user_id, role)
+        if not updated:
+            raise HTTPException(status_code=404, detail="member not found")
+        _audit(repo, "org.member.role_update", org_id, {"userId": user_id, "role": role})
+        return {"member": updated}
+
+    @app.delete("/api/orgs/{org_id}/members/{user_id}")
+    def remove_org_member(org_id: str, user_id: str, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        org = _require_org_manager(org_id, auth_user.id)
+        if user_id == org.get("ownerUserId"):
+            raise HTTPException(status_code=400, detail="cannot remove organization owner")
+        removed = repo.remove_organization_member(org_id, user_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="member not found")
+        _audit(repo, "org.member.remove", org_id, {"userId": user_id})
+        return {"removed": True, "userId": user_id}
+
+    @app.post("/api/orgs/{org_id}/share/template")
+    def share_template_to_org(org_id: str, payload: OrganizationShareTemplateRequest, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        _require_org_member(org_id, auth_user.id)
+        templates = repo.list_templates()
+        template = None
+        if payload.templateId:
+            template = next((item for item in templates if item.get("id") == payload.templateId), None)
+        if template is None:
+            active = repo.get_active_task()
+            template = {
+                "name": active.get("name") or "组织共享模板",
+                "description": (active.get("summary") or "").split("\n")[0] or "来自工作台会话的组织共享模板",
+                "request": active.get("request") or "",
+                "summary": active.get("summary") or "",
+                "tag": "组织共享",
+            }
+        shared = repo.share_template_to_org(org_id=org_id, template=template)
+        _audit(repo, "org.template.share", org_id, {"templateId": shared.get("id"), "name": shared.get("name")})
+        return {"template": shared}
 
     @app.get("/api/health")
     def health_check():

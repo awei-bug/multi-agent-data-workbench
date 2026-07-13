@@ -26,6 +26,31 @@ type ManagedUser = {
   permissions?: string[];
 };
 
+type OrgItem = {
+  id: string;
+  name: string;
+  slug: string;
+  memberRole?: string;
+  ownerUserId?: string;
+};
+
+type OrgMember = {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  role: string;
+  status: string;
+};
+
+type OrgInvite = {
+  id: string;
+  username: string;
+  role: string;
+  token: string;
+  status: string;
+};
+
 function SettingsPage({ onLoggedOut }: SettingsPageProps) {
   const navigate = useNavigate();
   const session = getAuthSession();
@@ -37,8 +62,21 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [usersStatus, setUsersStatus] = useState('');
 
+  const [orgs, setOrgs] = useState<OrgItem[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState('');
+  const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
+  const [orgInvites, setOrgInvites] = useState<OrgInvite[]>([]);
+  const [orgStatus, setOrgStatus] = useState('');
+  const [orgName, setOrgName] = useState('分析协作组');
+  const [orgSlug, setOrgSlug] = useState('analytics-team');
+  const [inviteUsername, setInviteUsername] = useState('');
+  const [inviteRole, setInviteRole] = useState('member');
+  const [inviteTokenInput, setInviteTokenInput] = useState('');
+
   const identityLocked = useMemo(() => Boolean(session), [session]);
   const isAdmin = canAdmin();
+  const selectedOrg = orgs.find((item) => item.id === selectedOrgId) || null;
+  const canManageOrg = selectedOrg?.memberRole === 'owner' || selectedOrg?.memberRole === 'admin';
 
   const loadUsers = () => {
     if (!isAdmin || !apiBaseUrl) {
@@ -54,9 +92,51 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
       .catch(() => setUsersStatus('无法加载用户列表。'));
   };
 
+  const loadOrgs = async () => {
+    if (!session || !apiBaseUrl) {
+      setOrgs([]);
+      return;
+    }
+    try {
+      const response = await workspaceFetch(`${apiBaseUrl}/api/orgs`);
+      if (!response.ok) throw new Error('load orgs failed');
+      const payload = await response.json();
+      const items = (payload.items || []) as OrgItem[];
+      setOrgs(items);
+      if (!selectedOrgId && items[0]?.id) setSelectedOrgId(items[0].id);
+      if (selectedOrgId && !items.some((item) => item.id === selectedOrgId)) {
+        setSelectedOrgId(items[0]?.id || '');
+      }
+    } catch {
+      setOrgStatus('无法加载组织列表。');
+    }
+  };
+
+  const loadOrgDetail = async (orgId: string) => {
+    if (!orgId || !apiBaseUrl) {
+      setOrgMembers([]);
+      setOrgInvites([]);
+      return;
+    }
+    try {
+      const response = await workspaceFetch(`${apiBaseUrl}/api/orgs/${encodeURIComponent(orgId)}`);
+      if (!response.ok) throw new Error('load org detail failed');
+      const payload = await response.json();
+      setOrgMembers(payload.members || []);
+      setOrgInvites(payload.invites || []);
+    } catch {
+      setOrgStatus('无法加载组织详情。');
+    }
+  };
+
   useEffect(() => {
     loadUsers();
+    void loadOrgs();
   }, [apiBaseUrl, isAdmin, session?.accessToken]);
+
+  useEffect(() => {
+    if (selectedOrgId) void loadOrgDetail(selectedOrgId);
+  }, [selectedOrgId, session?.accessToken]);
 
   const saveIdentity = () => {
     if (identityLocked) {
@@ -100,9 +180,104 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     }
     const payload = await response.json();
     setUsers((currentUsers) =>
-      currentUsers.map((item) => (item.id === user.id ? { ...item, role: payload.user.role, permissions: payload.user.permissions } : item)),
+      currentUsers.map((item) =>
+        item.id === user.id ? { ...item, role: payload.user.role, permissions: payload.user.permissions } : item,
+      ),
     );
     setUsersStatus(`已将 ${user.username} 调整为 ${roleLabel(role)}`);
+  };
+
+  const createOrg = async () => {
+    setOrgStatus('正在创建组织...');
+    const response = await workspaceFetch(`${apiBaseUrl}/api/orgs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: orgName, slug: orgSlug }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      setOrgStatus(payload?.error?.message || '创建组织失败');
+      return;
+    }
+    const payload = await response.json();
+    setOrgStatus(`组织已创建：${payload.organization.name}`);
+    await loadOrgs();
+    setSelectedOrgId(payload.organization.id);
+  };
+
+  const inviteMember = async () => {
+    if (!selectedOrgId) return;
+    setOrgStatus('正在发送邀请...');
+    const response = await workspaceFetch(`${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/invites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: inviteUsername, role: inviteRole }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      setOrgStatus(payload?.error?.message || '邀请失败');
+      return;
+    }
+    const payload = await response.json();
+    setOrgStatus(`已生成邀请：${payload.invite.username}，令牌 ${payload.invite.token}`);
+    setInviteUsername('');
+    await loadOrgDetail(selectedOrgId);
+  };
+
+  const acceptInvite = async () => {
+    setOrgStatus('正在接受邀请...');
+    const response = await workspaceFetch(`${apiBaseUrl}/api/orgs/invites/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: inviteTokenInput.trim() }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      setOrgStatus(payload?.error?.message || '接受邀请失败');
+      return;
+    }
+    setOrgStatus('已加入组织。');
+    setInviteTokenInput('');
+    await loadOrgs();
+  };
+
+  const shareCurrentTemplate = async () => {
+    if (!selectedOrgId) return;
+    setOrgStatus('正在共享当前任务为组织模板...');
+    const response = await workspaceFetch(
+      `${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/share/template`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      setOrgStatus(payload?.error?.message || '共享失败');
+      return;
+    }
+    const payload = await response.json();
+    setOrgStatus(`已共享组织模板：${payload.template?.name || payload.template?.id}`);
+  };
+
+  const changeOrgMemberRole = async (member: OrgMember, role: string) => {
+    if (!selectedOrgId) return;
+    const response = await workspaceFetch(
+      `${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/members/${encodeURIComponent(member.userId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      setOrgStatus(payload?.error?.message || '成员角色更新失败');
+      return;
+    }
+    setOrgStatus(`已更新成员角色：${member.username} -> ${role}`);
+    await loadOrgDetail(selectedOrgId);
   };
 
   return (
@@ -112,7 +287,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
         <div className="enterprise-page-title-row">
           <div>
             <h3>工作空间与企业配置</h3>
-            <p>管理登录态、JWT 作用域、RBAC 角色，以及本地兼容模式下的租户/用户标识。</p>
+            <p>管理登录态、JWT 作用域、RBAC 角色、组织协作，以及本地兼容模式下的租户/用户标识。</p>
           </div>
         </div>
       </section>
@@ -134,7 +309,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
           <small>{identityLocked ? '由 JWT 绑定' : '本地兼容模式'}</small>
         </article>
         <article className="enterprise-metric-card">
-          <span>当前角色</span>
+          <span>登录状态</span>
           <strong>{session ? roleLabel(session.user.role) : '本地模式'}</strong>
           <small>{session ? session.user.role : '兼容本地默认身份'}</small>
         </article>
@@ -182,6 +357,157 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
           )}
         </div>
       </section>
+
+      {session ? (
+        <section className="content-card workspace-section">
+          <div className="section-heading">
+            <span className="section-index">ORG</span>
+            <div>
+              <h3>组织协作</h3>
+              <p>创建组织、邀请成员、共享模板。组织成员可读取组织共享模板。</p>
+            </div>
+          </div>
+
+          <div className="form-grid">
+            <label className="field-label">
+              <span>组织名称</span>
+              <input className="text-input" value={orgName} onChange={(event) => setOrgName(event.target.value)} />
+            </label>
+            <label className="field-label">
+              <span>组织标识（slug）</span>
+              <input className="text-input" value={orgSlug} onChange={(event) => setOrgSlug(event.target.value)} />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button className="action-button" type="button" onClick={() => void createOrg()}>
+              创建组织
+            </button>
+            <button className="action-button secondary-button" type="button" onClick={() => void loadOrgs()}>
+              刷新组织
+            </button>
+          </div>
+
+          <div className="form-grid" style={{ marginTop: 12 }}>
+            <label className="field-label">
+              <span>当前组织</span>
+              <select
+                className="text-input"
+                value={selectedOrgId}
+                onChange={(event) => setSelectedOrgId(event.target.value)}
+              >
+                <option value="">请选择</option>
+                {orgs.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}（{org.memberRole || 'member'}）
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field-label">
+              <span>接受邀请令牌</span>
+              <input
+                className="text-input"
+                value={inviteTokenInput}
+                onChange={(event) => setInviteTokenInput(event.target.value)}
+                placeholder="粘贴邀请 token"
+              />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button className="action-button secondary-button" type="button" onClick={() => void acceptInvite()}>
+              接受邀请
+            </button>
+            <button
+              className="action-button"
+              type="button"
+              disabled={!selectedOrgId}
+              onClick={() => void shareCurrentTemplate()}
+            >
+              共享当前任务为组织模板
+            </button>
+          </div>
+
+          {selectedOrgId ? (
+            <>
+              {canManageOrg ? (
+                <div className="form-grid" style={{ marginTop: 12 }}>
+                  <label className="field-label">
+                    <span>邀请用户名</span>
+                    <input
+                      className="text-input"
+                      value={inviteUsername}
+                      onChange={(event) => setInviteUsername(event.target.value)}
+                      placeholder="member-b"
+                    />
+                  </label>
+                  <label className="field-label">
+                    <span>邀请角色</span>
+                    <select
+                      className="text-input"
+                      value={inviteRole}
+                      onChange={(event) => setInviteRole(event.target.value)}
+                    >
+                      <option value="viewer">viewer</option>
+                      <option value="member">member</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </label>
+                  <div className="actions-row">
+                    <button className="action-button" type="button" onClick={() => void inviteMember()}>
+                      生成邀请
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="status-note">你是该组织成员，但不是管理员，无法邀请他人。</p>
+              )}
+
+              <div className="history-list" style={{ marginTop: 12 }}>
+                {orgMembers.map((member) => (
+                  <article className="history-card" key={member.id}>
+                    <div className="history-card-header">
+                      <h4>{member.displayName || member.username}</h4>
+                      <span className="history-badge">{member.role}</span>
+                    </div>
+                    <p>{member.username}</p>
+                    {canManageOrg && member.role !== 'owner' ? (
+                      <label className="field-label">
+                        <span>成员角色</span>
+                        <select
+                          className="text-input"
+                          value={member.role}
+                          onChange={(event) => void changeOrgMemberRole(member, event.target.value)}
+                        >
+                          <option value="viewer">viewer</option>
+                          <option value="member">member</option>
+                          <option value="admin">admin</option>
+                        </select>
+                      </label>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+
+              {orgInvites.length > 0 ? (
+                <div className="history-list" style={{ marginTop: 12 }}>
+                  {orgInvites.map((invite) => (
+                    <article className="history-card" key={invite.id}>
+                      <div className="history-card-header">
+                        <h4>{invite.username}</h4>
+                        <span className="history-badge">{invite.role}</span>
+                      </div>
+                      <p className="status-note">token: {invite.token}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="status-note">还没有组织。可先创建一个组织，或接受邀请令牌加入。</p>
+          )}
+          {orgStatus ? <p className="status-note">{orgStatus}</p> : null}
+        </section>
+      ) : null}
 
       {isAdmin ? (
         <section className="content-card workspace-section">
@@ -273,21 +599,21 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
           </div>
         </div>
         <ul className="context-risk-list">
-          <li><span className="status-chip status-chip-success">已完成</span> 后端工作台按租户和用户隔离</li>
-          <li><span className="status-chip status-chip-success">已完成</span> 历史任务、模板、审计日志按作用域隔离</li>
-          <li><span className="status-chip status-chip-success">已完成</span> 本地账号注册/登录 + JWT scope 绑定</li>
-          <li><span className="status-chip status-chip-success">已完成</span> RBAC：viewer / analyst / admin</li>
-          <li><span className="status-chip status-chip-success">已完成</span> 异步工作流执行与状态轮询</li>
-          <li><span className="status-chip status-chip-success">已完成</span> 历史/模板/审计 scope 列与索引</li>
-          <li><span className="status-chip status-chip-success">已完成</span> JSON 日志与 Prometheus metrics</li>
-          <li><span className="status-chip status-chip-success">已完成</span> Redis 共享队列与 worker（可选）</li>
-          <li><span className="status-chip status-chip-success">已完成</span> Sentry 错误追踪与 Webhook 告警</li>
-          <li><span className="status-chip status-chip-success">已完成</span> CI/CD 镜像发布与预构建部署</li>
-          <li><span className="status-chip status-chip-success">已完成</span> Staging 远程自动部署（SSH）</li>
-          <li><span className="status-chip status-chip-success">已完成</span> Redis 共享限流（多实例）</li>
-          <li><span className="status-chip status-chip-success">已完成</span> 外部连接器（HTTP JSON / PostgreSQL）</li>
-          <li><span className="status-chip status-chip-success">已完成</span> Production 审批部署（Environment）</li>
-          <li><span className="status-chip">下一步</span> 连接器扩展、蓝绿发布</li>
+          <li>
+            <span className="status-chip status-chip-success">已完成</span> 本地账号注册/登录 + JWT scope 绑定
+          </li>
+          <li>
+            <span className="status-chip status-chip-success">已完成</span> RBAC：viewer / analyst / admin
+          </li>
+          <li>
+            <span className="status-chip status-chip-success">已完成</span> 组织协作：创建 / 邀请 / 共享模板
+          </li>
+          <li>
+            <span className="status-chip status-chip-success">已完成</span> 生产安全基线、对象存储、备份恢复、SSE
+          </li>
+          <li>
+            <span className="status-chip">下一步</span> SSO（OIDC）/ 蓝绿发布 / 深度关系化拆表
+          </li>
         </ul>
       </section>
     </div>

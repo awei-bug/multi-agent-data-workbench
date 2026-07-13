@@ -311,6 +311,38 @@ class TaskRepository:
                 "expires_at TEXT NOT NULL"
                 ")"
             )
+            
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS resource_tasks ("
+                "id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL, org_id TEXT, "
+                "name TEXT NOT NULL, status TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'live', "
+                "summary TEXT NOT NULL DEFAULT '', request TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS resource_datasets ("
+                "id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL, org_id TEXT, "
+                "name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'table', row_count INTEGER NOT NULL DEFAULT 0, "
+                "column_count INTEGER NOT NULL DEFAULT 0, storage_key TEXT, payload TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS resource_artifacts ("
+                "id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL, task_id TEXT, "
+                "artifact_type TEXT NOT NULL, storage_key TEXT, payload TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS org_shares ("
+                "id TEXT PRIMARY KEY, org_id TEXT NOT NULL, tenant_id TEXT NOT NULL, resource_type TEXT NOT NULL, "
+                "resource_id TEXT NOT NULL, shared_by TEXT NOT NULL, permission TEXT NOT NULL DEFAULT 'read', "
+                "payload TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS oidc_identities ("
+                "id TEXT PRIMARY KEY, user_id TEXT NOT NULL, issuer TEXT NOT NULL, subject TEXT NOT NULL, "
+                "email TEXT, created_at TEXT NOT NULL)"
+            )
+
             self._ensure_scope_columns(connection)
             connection.commit()
 
@@ -681,6 +713,10 @@ class TaskRepository:
         )
         uploaded_files.insert(0, dataset)
         self._set_json(self._scoped_key("uploaded_files"), {"items": uploaded_files})
+        try:
+            self.upsert_resource_dataset(dataset)
+        except Exception:
+            pass
         return deepcopy(dataset)
 
     def delete_dataset(self, dataset_id: str) -> dict | None:
@@ -864,6 +900,16 @@ class TaskRepository:
 
     def list_recent_tasks(self) -> list[dict]:
         tasks = self._list_payloads("history_tasks")
+        # include org-shared tasks
+        try:
+            _, owner_id = get_workspace_scope()
+            shared_tasks = self.list_shared_resources_for_user(owner_id, "task")
+            existing_ids = {str(item.get("id")) for item in tasks}
+            for item in shared_tasks:
+                if str(item.get("id")) not in existing_ids:
+                    tasks.append(item)
+        except Exception:
+            pass
         return deepcopy(sorted(tasks, key=lambda item: item["time"], reverse=True))
 
     def get_task_detail(self, task_id: str) -> dict | None:
@@ -897,6 +943,10 @@ class TaskRepository:
             meta["saved_task_counter"] += 1
         meta["active_task_history_id"] = saved_id
         self._set_meta(meta)
+        try:
+            self.upsert_resource_task(saved_task)
+        except Exception:
+            pass
         return deepcopy(saved_task)
 
     def list_templates(self) -> list[dict]:
@@ -915,6 +965,16 @@ class TaskRepository:
 
     def list_datasets(self) -> list[dict]:
         datasets = self._get_uploaded_files()
+        # include org-shared datasets
+        try:
+            _, owner_id = get_workspace_scope()
+            shared = self.list_shared_resources_for_user(owner_id, "dataset")
+            existing_ids = {str(item.get("id")) for item in datasets}
+            for item in shared:
+                if str(item.get("id")) not in existing_ids:
+                    datasets.append(item)
+        except Exception:
+            pass
         seen_sources = set()
         for dataset in datasets:
             if dataset.get("name"):
@@ -1418,6 +1478,278 @@ class TaskRepository:
                 (tenant_id, *owners),
             ).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+
+
+    # ---- Structured resources + org shares + OIDC identities ----
+
+    def upsert_resource_task(self, task: dict, *, org_id: str | None = None) -> dict:
+        tenant_id, owner_id = get_workspace_scope()
+        now = datetime.now(timezone.utc).isoformat()
+        payload = deepcopy(task)
+        task_id = str(payload.get("id") or f"task-{uuid4().hex[:12]}")
+        payload["id"] = task_id
+        conflict = (
+            "ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, status=EXCLUDED.status, mode=EXCLUDED.mode, "
+            "summary=EXCLUDED.summary, request=EXCLUDED.request, payload=EXCLUDED.payload, "
+            "org_id=EXCLUDED.org_id, updated_at=EXCLUDED.updated_at"
+            if self.use_postgres
+            else "ON CONFLICT(id) DO UPDATE SET name=excluded.name, status=excluded.status, mode=excluded.mode, "
+            "summary=excluded.summary, request=excluded.request, payload=excluded.payload, "
+            "org_id=excluded.org_id, updated_at=excluded.updated_at"
+        )
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO resource_tasks(id, tenant_id, owner_id, org_id, name, status, mode, summary, request, payload, created_at, updated_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}) "
+                + conflict,
+                (
+                    task_id,
+                    tenant_id,
+                    owner_id,
+                    org_id,
+                    str(payload.get("name") or "未命名任务"),
+                    str(payload.get("status") or "未知"),
+                    str(payload.get("mode") or "live"),
+                    str(payload.get("summary") or ""),
+                    str(payload.get("request") or ""),
+                    json.dumps(payload, ensure_ascii=False),
+                    str(payload.get("createdAt") or now),
+                    now,
+                ),
+            )
+            connection.commit()
+        return payload
+
+    def upsert_resource_dataset(self, dataset: dict, *, org_id: str | None = None) -> dict:
+        tenant_id, owner_id = get_workspace_scope()
+        now = datetime.now(timezone.utc).isoformat()
+        payload = deepcopy(dataset)
+        dataset_id = str(payload.get("id") or f"dataset-{uuid4().hex[:12]}")
+        payload["id"] = dataset_id
+        conflict = (
+            "ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, kind=EXCLUDED.kind, row_count=EXCLUDED.row_count, "
+            "column_count=EXCLUDED.column_count, storage_key=EXCLUDED.storage_key, payload=EXCLUDED.payload, "
+            "org_id=EXCLUDED.org_id, updated_at=EXCLUDED.updated_at"
+            if self.use_postgres
+            else "ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, row_count=excluded.row_count, "
+            "column_count=excluded.column_count, storage_key=excluded.storage_key, payload=excluded.payload, "
+            "org_id=excluded.org_id, updated_at=excluded.updated_at"
+        )
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO resource_datasets(id, tenant_id, owner_id, org_id, name, kind, row_count, column_count, storage_key, payload, created_at, updated_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}) "
+                + conflict,
+                (
+                    dataset_id,
+                    tenant_id,
+                    owner_id,
+                    org_id,
+                    str(payload.get("name") or payload.get("fileName") or "dataset"),
+                    str(payload.get("kind") or "table"),
+                    int(payload.get("rowCount") or 0),
+                    int(payload.get("columnCount") or 0),
+                    payload.get("storageKey"),
+                    json.dumps(payload, ensure_ascii=False),
+                    str(payload.get("uploadedAt") or now),
+                    now,
+                ),
+            )
+            connection.commit()
+        return payload
+
+    def upsert_resource_artifact(self, artifact: dict, *, task_id: str | None = None) -> dict:
+        tenant_id, owner_id = get_workspace_scope()
+        now = datetime.now(timezone.utc).isoformat()
+        payload = deepcopy(artifact)
+        artifact_id = str(payload.get("id") or f"artifact-{uuid4().hex[:12]}")
+        payload["id"] = artifact_id
+        conflict = (
+            "ON CONFLICT(id) DO UPDATE SET artifact_type=EXCLUDED.artifact_type, storage_key=EXCLUDED.storage_key, "
+            "payload=EXCLUDED.payload, task_id=EXCLUDED.task_id"
+            if self.use_postgres
+            else "ON CONFLICT(id) DO UPDATE SET artifact_type=excluded.artifact_type, storage_key=excluded.storage_key, "
+            "payload=excluded.payload, task_id=excluded.task_id"
+        )
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO resource_artifacts(id, tenant_id, owner_id, task_id, artifact_type, storage_key, payload, created_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}) "
+                + conflict,
+                (
+                    artifact_id,
+                    tenant_id,
+                    owner_id,
+                    task_id or payload.get("taskId"),
+                    str(payload.get("type") or "unknown"),
+                    payload.get("storageKey"),
+                    json.dumps(payload, ensure_ascii=False),
+                    str(payload.get("createdAt") or now),
+                ),
+            )
+            connection.commit()
+        return payload
+
+    def create_org_share(
+        self,
+        *,
+        org_id: str,
+        resource_type: str,
+        resource_id: str,
+        shared_by: str,
+        permission: str = "read",
+        payload: dict | None = None,
+    ) -> dict:
+        tenant_id, _ = get_workspace_scope()
+        share = {
+            "id": f"share-{uuid4().hex[:12]}",
+            "orgId": org_id,
+            "tenantId": tenant_id,
+            "resourceType": resource_type,
+            "resourceId": resource_id,
+            "sharedBy": shared_by,
+            "permission": permission,
+            "payload": payload or {},
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        with closing(self._connect()) as connection:
+            connection.execute(
+                f"DELETE FROM org_shares WHERE org_id = {self._placeholder()} AND resource_type = {self._placeholder()} "
+                f"AND resource_id = {self._placeholder()}",
+                (org_id, resource_type, resource_id),
+            )
+            connection.execute(
+                "INSERT INTO org_shares(id, org_id, tenant_id, resource_type, resource_id, shared_by, permission, payload, created_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                (
+                    share["id"],
+                    share["orgId"],
+                    share["tenantId"],
+                    share["resourceType"],
+                    share["resourceId"],
+                    share["sharedBy"],
+                    share["permission"],
+                    json.dumps(share["payload"], ensure_ascii=False),
+                    share["createdAt"],
+                ),
+            )
+            connection.commit()
+        return share
+
+    def list_org_shares(self, org_id: str, resource_type: str | None = None) -> list[dict]:
+        with closing(self._connect()) as connection:
+            if resource_type:
+                rows = connection.execute(
+                    "SELECT id, org_id, tenant_id, resource_type, resource_id, shared_by, permission, payload, created_at "
+                    f"FROM org_shares WHERE org_id = {self._placeholder()} AND resource_type = {self._placeholder()} "
+                    "ORDER BY created_at DESC",
+                    (org_id, resource_type),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT id, org_id, tenant_id, resource_type, resource_id, shared_by, permission, payload, created_at "
+                    f"FROM org_shares WHERE org_id = {self._placeholder()} ORDER BY created_at DESC",
+                    (org_id,),
+                ).fetchall()
+        items = []
+        for row in rows:
+            try:
+                payload = json.loads(row[7] or "{}")
+            except Exception:
+                payload = {}
+            items.append(
+                {
+                    "id": row[0],
+                    "orgId": row[1],
+                    "tenantId": row[2],
+                    "resourceType": row[3],
+                    "resourceId": row[4],
+                    "sharedBy": row[5],
+                    "permission": row[6],
+                    "payload": payload,
+                    "createdAt": row[8],
+                }
+            )
+        return items
+
+    def list_shared_resources_for_user(self, user_id: str, resource_type: str) -> list[dict]:
+        tenant_id, _ = get_workspace_scope()
+        org_ids = [item["id"] for item in self.list_organizations_for_user(user_id, tenant_id)]
+        if not org_ids:
+            return []
+        result = []
+        for org_id in org_ids:
+            for share in self.list_org_shares(org_id, resource_type=resource_type):
+                item = deepcopy(share.get("payload") or {})
+                item["id"] = share["resourceId"]
+                item["shared"] = True
+                item["orgId"] = org_id
+                item["sharePermission"] = share.get("permission") or "read"
+                result.append(item)
+        return result
+
+    def link_oidc_identity(
+        self,
+        *,
+        user_id: str,
+        issuer: str,
+        subject: str,
+        email: str | None = None,
+    ) -> dict:
+        identity = {
+            "id": f"oidc-{uuid4().hex[:12]}",
+            "userId": user_id,
+            "issuer": issuer,
+            "subject": subject,
+            "email": email or "",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        with closing(self._connect()) as connection:
+            existing = connection.execute(
+                f"SELECT id, user_id FROM oidc_identities WHERE issuer = {self._placeholder()} AND subject = {self._placeholder()}",
+                (issuer, subject),
+            ).fetchone()
+            if existing:
+                return {
+                    "id": existing[0],
+                    "userId": existing[1],
+                    "issuer": issuer,
+                    "subject": subject,
+                    "email": email or "",
+                }
+            connection.execute(
+                "INSERT INTO oidc_identities(id, user_id, issuer, subject, email, created_at) "
+                f"VALUES({self._placeholder()}, {self._placeholder()}, {self._placeholder()}, "
+                f"{self._placeholder()}, {self._placeholder()}, {self._placeholder()})",
+                (
+                    identity["id"],
+                    identity["userId"],
+                    identity["issuer"],
+                    identity["subject"],
+                    identity["email"],
+                    identity["createdAt"],
+                ),
+            )
+            connection.commit()
+        return identity
+
+    def get_user_by_oidc(self, *, issuer: str, subject: str) -> dict | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT user_id FROM oidc_identities "
+                f"WHERE issuer = {self._placeholder()} AND subject = {self._placeholder()}",
+                (issuer, subject),
+            ).fetchone()
+        if not row:
+            return None
+        return self.get_user_by_id(str(row[0]))
 
 
 def create_repository(

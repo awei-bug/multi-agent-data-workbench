@@ -84,6 +84,15 @@ def main() -> None:
         web_fetch_max_bytes=settings.web_fetch_max_bytes,
         web_table_max_rows=settings.web_table_max_rows,
         web_text_max_chars=settings.web_text_max_chars,
+        oidc_enabled=settings.oidc_enabled,
+        oidc_issuer=settings.oidc_issuer,
+        oidc_client_id=settings.oidc_client_id,
+        oidc_client_secret=settings.oidc_client_secret,
+        oidc_redirect_uri=settings.oidc_redirect_uri,
+        oidc_scopes=settings.oidc_scopes,
+        oidc_authorize_url=settings.oidc_authorize_url,
+        oidc_token_url=settings.oidc_token_url,
+        oidc_userinfo_url=settings.oidc_userinfo_url,
     )
     uvicorn.run(app, host=settings.host, port=settings.port)
 

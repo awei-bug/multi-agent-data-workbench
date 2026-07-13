@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { createEmptyTask } from './emptyTask';
@@ -7,6 +7,7 @@ import { resolveContinuePath } from '../utils/continuePlan';
 import {
   loginWithPassword,
   registerWithPassword,
+  saveAuthSession,
   workspaceFetch,
 } from '../utils/workspaceIdentity';
 
@@ -40,6 +41,48 @@ function LoginPage({ onAuthenticated }: LoginPageProps) {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
+  const [oidcIssuer, setOidcIssuer] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`${apiBaseUrl}/api/auth/oidc/status`)
+      .then((response) => (response.ok ? response.json() : { enabled: false }))
+      .then((payload: { enabled?: boolean; issuer?: string }) => {
+        if (cancelled) return;
+        setOidcEnabled(Boolean(payload.enabled));
+        setOidcIssuer(String(payload.issuer || ''));
+      })
+      .catch(() => {
+        if (!cancelled) setOidcEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl]);
+
+  // OIDC callback landing: /login?oidc=1&accessToken=... or handled by backend redirect payload stored in hash/query
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('accessToken');
+    const oidcFlag = params.get('oidc');
+    if (!token || oidcFlag !== '1') return;
+    // Backend callback returns JSON; for browser SSO we also support token in query after frontend bridge.
+    void (async () => {
+      try {
+        const me = await fetch(`${apiBaseUrl}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!me.ok) return;
+        const payload = await me.json();
+        saveAuthSession({ accessToken: token, user: payload.user });
+        onAuthenticated?.();
+        navigate('/dashboard', { replace: true });
+      } catch {
+        // ignore
+      }
+    })();
+  }, [apiBaseUrl, navigate, onAuthenticated]);
 
   const title = mode === 'login' ? '接入分析指挥台' : '初始化团队账号';
   const subtitle =
@@ -59,6 +102,19 @@ function LoginPage({ onAuthenticated }: LoginPageProps) {
     [mode],
   );
 
+  const finishLogin = async () => {
+    onAuthenticated?.();
+    let nextPath = '/dashboard';
+    try {
+      const response = await workspaceFetch(`${apiBaseUrl}/api/tasks/active`);
+      const task = (response.ok ? await response.json() : createEmptyTask()) as TaskRecord;
+      nextPath = resolveContinuePath(task, '/dashboard');
+    } catch {
+      nextPath = '/dashboard';
+    }
+    navigate(nextPath, { replace: true });
+  };
+
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
@@ -74,21 +130,29 @@ function LoginPage({ onAuthenticated }: LoginPageProps) {
           displayName: displayName || username,
         });
       }
-      onAuthenticated?.();
-
-      // Jump to the page for "what to do next" based on current task state.
-      let nextPath = '/dashboard';
-      try {
-        const response = await workspaceFetch(`${apiBaseUrl}/api/tasks/active`);
-        const task = (response.ok ? await response.json() : createEmptyTask()) as TaskRecord;
-        nextPath = resolveContinuePath(task, '/dashboard');
-      } catch {
-        nextPath = '/dashboard';
-      }
-      navigate(nextPath, { replace: true });
+      await finishLogin();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : '认证失败');
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const onOidcLogin = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/auth/oidc/login`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.detail || payload?.error?.message || 'OIDC 未启用');
+      }
+      const payload = await response.json();
+      if (!payload.authorizeUrl) throw new Error('未返回授权地址');
+      // Full-page redirect to IdP.
+      window.location.assign(String(payload.authorizeUrl));
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'OIDC 登录失败');
       setLoading(false);
     }
   };
@@ -258,6 +322,12 @@ function LoginPage({ onAuthenticated }: LoginPageProps) {
                 <span>{submitLabel}</span>
                 {!loading ? <em>→</em> : null}
               </button>
+
+              {mode === 'login' && oidcEnabled ? (
+                <button className="cc-switch" type="button" disabled={loading} onClick={() => void onOidcLogin()}>
+                  企业 SSO 登录{oidcIssuer ? `（${oidcIssuer}）` : ''}
+                </button>
+              ) : null}
 
               <button
                 className="cc-switch"

@@ -284,6 +284,7 @@ jobs:
           REGISTRY: ghcr.io
           REGISTRY_USER: ${{ secrets.PRODUCTION_REGISTRY_USER }}
           REGISTRY_TOKEN: ${{ secrets.PRODUCTION_REGISTRY_TOKEN }}
+          BLUE_GREEN: ${{ secrets.PRODUCTION_BLUE_GREEN }}
         run: |
           set -euo pipefail
           KEY_PATH="${GITHUB_WORKSPACE}/.ssh_production_key"
@@ -296,5 +297,18 @@ jobs:
           export HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8787/api/health/ready}"
           export REGISTRY_USER="${REGISTRY_USER:-${{ github.actor }}}"
           export REGISTRY_TOKEN="${REGISTRY_TOKEN:-${{ secrets.GITHUB_TOKEN }}}"
-          chmod +x tools/ssh-deploy.sh tools/remote-deploy.sh
-          bash tools/ssh-deploy.sh
+          chmod +x tools/ssh-deploy.sh tools/remote-deploy.sh tools/blue-green-deploy.sh
+          if [ "${BLUE_GREEN:-false}" = "true" ]; then
+            # Upload compose assets and run blue/green on remote host.
+            scp -i "$DEPLOY_SSH_KEY_PATH" -P "$DEPLOY_PORT" -o StrictHostKeyChecking=no \
+              docker-compose.release.yml tools/blue-green-deploy.sh \
+              "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
+            ssh -i "$DEPLOY_SSH_KEY_PATH" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=no \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "cd '${DEPLOY_PATH}' && chmod +x blue-green-deploy.sh && \
+               IMAGE_PREFIX='${IMAGE_PREFIX}' IMAGE_TAG='${IMAGE_TAG}' \
+               DEPLOY_ROOT='${DEPLOY_PATH}' HEALTH_URL='${HEALTH_URL}' \
+               bash ./blue-green-deploy.sh"
+          else
+            bash tools/ssh-deploy.sh
+          fi

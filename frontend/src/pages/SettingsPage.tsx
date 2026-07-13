@@ -261,6 +261,51 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     setOrgStatus(`已共享组织模板：${payload.template?.name || payload.template?.id}`);
   };
 
+  const shareResource = async (resourceType: 'task' | 'dataset' | 'template', resourceId?: string) => {
+    if (!selectedOrgId) return;
+    setOrgStatus(`正在共享${resourceType}到组织...`);
+    const response = await workspaceFetch(
+      `${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/share/resource`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resourceType,
+          resourceId: resourceId || undefined,
+          permission: 'read',
+        }),
+      },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      setOrgStatus(payload?.error?.message || payload?.detail || '资源共享失败');
+      return;
+    }
+    const payload = await response.json();
+    setOrgStatus(`已共享 ${resourceType}：${payload.share?.resourceId || ''}`);
+  };
+
+  const shareCurrentTask = async () => {
+    await shareResource('task', 'active');
+  };
+
+  const shareActiveDataset = async () => {
+    // Share currently bound dataset if present on active task.
+    try {
+      const response = await workspaceFetch(`${apiBaseUrl}/api/tasks/active`);
+      if (!response.ok) throw new Error('active task unavailable');
+      const task = await response.json();
+      const datasetId = task?.dataSource?.id;
+      if (!datasetId) {
+        setOrgStatus('当前任务未绑定数据集，无法共享。');
+        return;
+      }
+      await shareResource('dataset', String(datasetId));
+    } catch {
+      setOrgStatus('读取当前任务失败，无法共享数据集。');
+    }
+  };
+
   const changeOrgMemberRole = async (member: OrgMember, role: string) => {
     if (!selectedOrgId) return;
     const response = await workspaceFetch(
@@ -424,6 +469,22 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
               onClick={() => void shareCurrentTemplate()}
             >
               共享当前任务为组织模板
+            </button>
+            <button
+              className="action-button secondary-button"
+              type="button"
+              disabled={!selectedOrgId}
+              onClick={() => void shareCurrentTask()}
+            >
+              共享当前任务到组织
+            </button>
+            <button
+              className="action-button secondary-button"
+              type="button"
+              disabled={!selectedOrgId}
+              onClick={() => void shareActiveDataset()}
+            >
+              共享当前数据集到组织
             </button>
           </div>
 
@@ -609,10 +670,19 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
             <span className="status-chip status-chip-success">已完成</span> 组织协作：创建 / 邀请 / 共享模板
           </li>
           <li>
+            <span className="status-chip status-chip-success">已完成</span> 组织级任务/数据集共享
+          </li>
+          <li>
             <span className="status-chip status-chip-success">已完成</span> 生产安全基线、对象存储、备份恢复、SSE
           </li>
           <li>
-            <span className="status-chip">下一步</span> SSO（OIDC）/ 蓝绿发布 / 深度关系化拆表
+            <span className="status-chip status-chip-success">已完成</span> SSO（OIDC）登录入口
+          </li>
+          <li>
+            <span className="status-chip status-chip-success">已完成</span> 蓝绿发布脚本
+          </li>
+          <li>
+            <span className="status-chip">下一步</span> 完整项目空间权限矩阵 / 合规增强
           </li>
         </ul>
       </section>

@@ -23,7 +23,7 @@ jobs:
       - name: 运行后端测试
         run: |
           $env:PYTHONPATH = "backend"
-          python -m pytest backend/tests/test_config.py backend/tests/test_migrations.py backend/tests/test_workspace_api.py backend/tests/test_workflow_service.py backend/tests/test_document_analysis_path.py backend/tests/test_auth.py backend/tests/test_rbac.py backend/tests/test_async_workflow.py backend/tests/test_relational_scope.py backend/tests/test_observability.py backend/tests/test_redis_queue.py backend/tests/test_production_security.py backend/tests/test_organizations.py backend/tests/test_error_tracking.py backend/tests/test_rate_limit.py backend/tests/test_connectors.py
+          python -m pytest backend/tests/test_config.py backend/tests/test_migrations.py backend/tests/test_workspace_api.py backend/tests/test_workflow_service.py backend/tests/test_document_analysis_path.py backend/tests/test_auth.py backend/tests/test_rbac.py backend/tests/test_async_workflow.py backend/tests/test_relational_scope.py backend/tests/test_observability.py backend/tests/test_redis_queue.py backend/tests/test_production_security.py backend/tests/test_organizations.py backend/tests/test_oidc_and_share.py backend/tests/test_error_tracking.py backend/tests/test_rate_limit.py backend/tests/test_connectors.py
         shell: pwsh
 
   frontend:

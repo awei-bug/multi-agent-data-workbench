@@ -57,6 +57,15 @@ from backend_py.rate_limit import create_rate_limiter, rate_limit_key
 from backend_py.repository import TaskRepository, create_repository, get_workspace_scope, reset_workspace_scope, set_workspace_scope
 from backend_py.security import security_headers, validate_production_settings
 from backend_py.upload_security import UploadSecurityError, validate_upload
+from backend_py.oidc import (
+    OidcError,
+    OidcSettings,
+    build_authorize_url,
+    create_pkce_pair,
+    exchange_code_for_tokens,
+    fetch_userinfo,
+    normalize_oidc_profile,
+)
 from backend_py.workflow_runner import create_workflow_queue, attach_execution_meta
 
 logger = logging.getLogger("workspace_api")
@@ -141,6 +150,12 @@ class OrganizationShareTemplateRequest(BaseModel):
 
 class InviteAcceptRequest(BaseModel):
     token: str
+
+
+class OrganizationShareResourceRequest(BaseModel):
+    resourceType: str
+    resourceId: str | None = None
+    permission: str = "read"
 
 
 class ConnectionUpsertRequest(BaseModel):
@@ -336,6 +351,15 @@ def create_app(
     web_fetch_max_bytes: int = 5_000_000,
     web_table_max_rows: int = 1000,
     web_text_max_chars: int = 200_000,
+    oidc_enabled: bool = False,
+    oidc_issuer: str = "",
+    oidc_client_id: str = "",
+    oidc_client_secret: str = "",
+    oidc_redirect_uri: str = "",
+    oidc_scopes: str = "openid profile email",
+    oidc_authorize_url: str = "",
+    oidc_token_url: str = "",
+    oidc_userinfo_url: str = "",
 ) -> FastAPI:
     security_report = validate_production_settings(
         auth_required=auth_required,
@@ -393,7 +417,20 @@ def create_app(
             "http://localhost:5175",
         ]
     )
-    open_paths = public_auth_paths()
+    open_paths = public_auth_paths() | {"/api/auth/oidc/login", "/api/auth/oidc/callback", "/api/auth/oidc/status"}
+    oidc_states: dict[str, dict] = {}
+    oidc_settings = OidcSettings(
+        enabled=bool(oidc_enabled and oidc_issuer and oidc_client_id and oidc_redirect_uri),
+        issuer=oidc_issuer,
+        client_id=oidc_client_id,
+        client_secret=oidc_client_secret,
+        redirect_uri=oidc_redirect_uri,
+        scopes=oidc_scopes or "openid profile email",
+        authorize_url=oidc_authorize_url,
+        token_url=oidc_token_url,
+        userinfo_url=oidc_userinfo_url,
+    )
+    app.state.oidc_settings = oidc_settings
 
     def _public_user(user: AuthUser | dict) -> dict:
         if isinstance(user, AuthUser):
@@ -1024,6 +1061,138 @@ def create_app(
         shared = repo.share_template_to_org(org_id=org_id, template=template)
         _audit(repo, "org.template.share", org_id, {"templateId": shared.get("id"), "name": shared.get("name")})
         return {"template": shared}
+
+
+    @app.get("/api/auth/oidc/status")
+    def oidc_status() -> dict:
+        return {
+            "enabled": bool(getattr(app.state, "oidc_settings", None) and app.state.oidc_settings.enabled),
+            "issuer": oidc_settings.issuer if oidc_settings.enabled else "",
+        }
+
+    @app.get("/api/auth/oidc/login")
+    def oidc_login() -> dict:
+        if not oidc_settings.enabled:
+            raise HTTPException(status_code=404, detail="oidc disabled")
+        state = uuid4().hex
+        verifier, challenge = create_pkce_pair()
+        oidc_states[state] = {"verifier": verifier, "createdAt": datetime.now(timezone.utc).isoformat()}
+        try:
+            url = build_authorize_url(oidc_settings, state=state, code_challenge=challenge)
+        except OidcError as error:
+            raise HTTPException(status_code=400, detail=error.message) from error
+        return {"authorizeUrl": url, "state": state}
+
+    @app.get("/api/auth/oidc/callback")
+    def oidc_callback(code: str = "", state: str = "") -> dict:
+        if not oidc_settings.enabled:
+            raise HTTPException(status_code=404, detail="oidc disabled")
+        if not code or not state or state not in oidc_states:
+            raise HTTPException(status_code=400, detail="invalid oidc state")
+        meta = oidc_states.pop(state)
+        try:
+            tokens = exchange_code_for_tokens(
+                oidc_settings,
+                code=code,
+                code_verifier=str(meta.get("verifier") or ""),
+            )
+            access_token = str(tokens.get("access_token") or "")
+            if not access_token:
+                raise OidcError("access_token missing in token response", "oidc_token_failed")
+            profile_raw = fetch_userinfo(oidc_settings, access_token)
+            profile = normalize_oidc_profile(profile_raw, default_tenant=default_tenant_id)
+            user = repo.get_user_by_oidc(issuer=oidc_settings.issuer, subject=profile["subject"])
+            if user is None:
+                existing = repo.get_user_by_username(profile["username"])
+                if existing:
+                    user = existing
+                else:
+                    role = ROLE_ADMIN if repo.count_users() == 0 else ROLE_ANALYST
+                    user = repo.create_user(
+                        username=profile["username"],
+                        password_hash=hash_password(uuid4().hex + "Aa1!"),
+                        tenant_id=profile["tenantId"] or default_tenant_id,
+                        display_name=profile["displayName"],
+                        role=role,
+                    )
+                repo.link_oidc_identity(
+                    user_id=user["id"],
+                    issuer=oidc_settings.issuer,
+                    subject=profile["subject"],
+                    email=profile.get("email"),
+                )
+            token_payload = _issue_token_for_user(user)
+            _audit(repo, "auth.oidc.login", user["id"], {"issuer": oidc_settings.issuer, "subject": profile["subject"]})
+            return token_payload
+        except OidcError as error:
+            raise HTTPException(status_code=400, detail=error.message) from error
+
+    @app.post("/api/orgs/{org_id}/share/resource")
+    def share_resource_to_org(org_id: str, payload: OrganizationShareResourceRequest, request: Request) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        _require_org_member(org_id, auth_user.id)
+        resource_type = (payload.resourceType or "").strip().lower()
+        if resource_type not in {"task", "dataset", "template"}:
+            raise HTTPException(status_code=400, detail="resourceType must be task/dataset/template")
+        resource_id = (payload.resourceId or "").strip()
+        resource_payload = None
+        if resource_type == "template":
+            templates = repo.list_templates()
+            resource_payload = next((item for item in templates if item.get("id") == resource_id), None) if resource_id else None
+            if resource_payload is None:
+                active = repo.get_active_task()
+                resource_payload = {
+                    "id": f"template-from-active-{uuid4().hex[:8]}",
+                    "name": active.get("name") or "组织共享模板",
+                    "description": (active.get("summary") or "").split("\n")[0] or "组织共享模板",
+                    "request": active.get("request") or "",
+                    "summary": active.get("summary") or "",
+                    "tag": "组织共享",
+                    "source": "organization",
+                }
+                resource_id = resource_payload["id"]
+                repo.share_template_to_org(org_id=org_id, template=resource_payload)
+            else:
+                repo.share_template_to_org(org_id=org_id, template=resource_payload)
+        elif resource_type == "dataset":
+            datasets = repo.list_datasets()
+            resource_payload = next((item for item in datasets if item.get("id") == resource_id), None)
+            if resource_payload is None:
+                raise HTTPException(status_code=404, detail="dataset not found")
+            repo.upsert_resource_dataset(resource_payload, org_id=org_id)
+        else:
+            if resource_id in {"", "active", "current"}:
+                resource_payload = repo.get_active_task()
+                resource_id = str(resource_payload.get("id") or "workspace-active-session")
+            else:
+                resource_payload = next((item for item in repo.list_recent_tasks() if item.get("id") == resource_id), None)
+            if resource_payload is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            repo.upsert_resource_task(resource_payload, org_id=org_id)
+        permission = (payload.permission or "read").strip().lower()
+        if permission not in {"read", "write"}:
+            permission = "read"
+        share = repo.create_org_share(
+            org_id=org_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            shared_by=auth_user.id,
+            permission=permission,
+            payload=resource_payload or {},
+        )
+        _audit(repo, "org.resource.share", org_id, {"resourceType": resource_type, "resourceId": resource_id})
+        return {"share": share}
+
+    @app.get("/api/orgs/{org_id}/shares")
+    def list_org_shares(org_id: str, request: Request, resourceType: str | None = None) -> dict:
+        auth_user = getattr(request.state, "auth_user", None)
+        if auth_user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        _require_org_member(org_id, auth_user.id)
+        items = repo.list_org_shares(org_id, resource_type=(resourceType or None))
+        return {"items": items}
 
     @app.get("/api/health")
     def health_check():

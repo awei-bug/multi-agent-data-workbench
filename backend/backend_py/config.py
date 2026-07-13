@@ -59,6 +59,15 @@ class RuntimeSettings:
     web_fetch_max_bytes: int
     web_table_max_rows: int
     web_text_max_chars: int
+    oidc_enabled: bool
+    oidc_issuer: str
+    oidc_client_id: str
+    oidc_client_secret: str
+    oidc_redirect_uri: str
+    oidc_scopes: str
+    oidc_authorize_url: str
+    oidc_token_url: str
+    oidc_userinfo_url: str
 
 
 def configure_logging(level: str, *, json_logs: bool = False) -> None:
@@ -144,4 +153,13 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         web_fetch_max_bytes=int(values.get("WORKSPACE_WEB_FETCH_MAX_BYTES", "5000000")),
         web_table_max_rows=int(values.get("WORKSPACE_WEB_TABLE_MAX_ROWS", "1000")),
         web_text_max_chars=int(values.get("WORKSPACE_WEB_TEXT_MAX_CHARS", "200000")),
+        oidc_enabled=values.get("WORKSPACE_OIDC_ENABLED", "false").lower() == "true",
+        oidc_issuer=values.get("WORKSPACE_OIDC_ISSUER", "").strip(),
+        oidc_client_id=values.get("WORKSPACE_OIDC_CLIENT_ID", "").strip(),
+        oidc_client_secret=values.get("WORKSPACE_OIDC_CLIENT_SECRET", "").strip(),
+        oidc_redirect_uri=values.get("WORKSPACE_OIDC_REDIRECT_URI", "").strip(),
+        oidc_scopes=values.get("WORKSPACE_OIDC_SCOPES", "openid profile email").strip() or "openid profile email",
+        oidc_authorize_url=values.get("WORKSPACE_OIDC_AUTHORIZE_URL", "").strip(),
+        oidc_token_url=values.get("WORKSPACE_OIDC_TOKEN_URL", "").strip(),
+        oidc_userinfo_url=values.get("WORKSPACE_OIDC_USERINFO_URL", "").strip(),
     )

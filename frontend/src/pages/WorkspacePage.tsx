@@ -175,7 +175,75 @@ function WorkspacePage() {
         !terminalPhases.includes(String(task.snapshot?.phase));
 
       if (isAsyncRunning && ['start', 'resume', 'retry', 'retry_current'].includes(action)) {
-        setMessage('异步任务已入队，正在后台推进节点...');
+        setMessage('异步任务已入队，正在实时同步进度...');
+        const streamUrl = withWorkspaceQuery(`${apiBaseUrl}/api/workflow/jobs/stream`);
+
+        const finishedViaSse = await new Promise<boolean>((resolve) => {
+          let settled = false;
+          let source: EventSource | null = null;
+          const finish = (value: boolean) => {
+            if (settled) return;
+            settled = true;
+            try {
+              source?.close();
+            } catch {
+              // ignore
+            }
+            resolve(value);
+          };
+
+          try {
+            source = new EventSource(streamUrl);
+          } catch {
+            finish(false);
+            return;
+          }
+
+          const onPayload = (raw: string) => {
+            try {
+              const payload = JSON.parse(raw) as {
+                task?: TaskRecord & { execution?: { status?: string; lastError?: string } };
+              };
+              if (!payload.task) return;
+              updateTask(payload.task);
+              const nextPhase = String(payload.task.snapshot?.phase || '');
+              const status = payload.task.execution?.status;
+              if (
+                terminalPhases.includes(nextPhase) ||
+                status === 'succeeded' ||
+                status === 'failed' ||
+                status === 'cancelled'
+              ) {
+                if (status === 'failed') {
+                  setMessage(`异步任务失败：${payload.task.execution?.lastError || payload.task.status}`);
+                } else if (status === 'cancelled' || nextPhase === 'stopped') {
+                  setMessage('异步任务已终止。');
+                } else {
+                  setMessage(`流程已结束：${payload.task.status}`);
+                  setStage('output');
+                }
+                finish(true);
+              }
+            } catch {
+              // ignore malformed chunks
+            }
+          };
+
+          source.addEventListener('workflow', (event) => {
+            onPayload((event as MessageEvent).data);
+          });
+          source.addEventListener('done', (event) => {
+            onPayload((event as MessageEvent).data);
+            finish(true);
+          });
+          source.onerror = () => finish(false);
+          window.setTimeout(() => finish(false), 60000);
+        });
+
+        if (finishedViaSse) return;
+
+        // Fallback to polling if SSE is unavailable.
+        setMessage('实时通道不可用，改用轮询同步进度...');
         const startedAt = Date.now();
         while (Date.now() - startedAt < 60000) {
           await new Promise((resolve) => window.setTimeout(resolve, 700));

@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from backend_py.agnes_client import AgnesChatClient, create_agnes_client
-from backend_py.artifact_store import ArtifactStore
+from backend_py.artifact_store import ArtifactStore, create_artifact_store
 from backend_py.auth import (
     AuthError,
     AuthUser,
@@ -42,10 +42,10 @@ from backend_py.auth import (
 )
 from backend_py.connectors import (
     ConnectorError,
-    build_table_data_source,
+    build_connector_data_source,
     decrypt_credentials,
     encrypt_credentials,
-    fetch_rows,
+    fetch_connector_payload,
     list_connector_types,
     public_connection_view,
     test_connection,
@@ -55,6 +55,8 @@ from backend_py.error_tracking import get_error_tracker, init_error_tracking
 from backend_py.observability import get_metrics
 from backend_py.rate_limit import create_rate_limiter, rate_limit_key
 from backend_py.repository import TaskRepository, create_repository, get_workspace_scope, reset_workspace_scope, set_workspace_scope
+from backend_py.security import security_headers, validate_production_settings
+from backend_py.upload_security import UploadSecurityError, validate_upload
 from backend_py.workflow_runner import create_workflow_queue, attach_execution_meta
 
 logger = logging.getLogger("workspace_api")
@@ -140,10 +142,9 @@ def _audit(repo: TaskRepository, action: str, target: str, payload: dict | None 
     repo.add_audit_event(action, target, payload)
 
 
-def _add_security_headers(response) -> None:
-    response.headers["x-content-type-options"] = "nosniff"
-    response.headers["x-frame-options"] = "DENY"
-    response.headers["referrer-policy"] = "no-referrer"
+def _add_security_headers(response, *, enable_hsts: bool = False, csp: str | None = None) -> None:
+    for key, value in security_headers(enable_hsts=enable_hsts, csp=csp).items():
+        response.headers[key] = value
 
 
 def _error_response(
@@ -153,6 +154,9 @@ def _error_response(
     message: str,
     details: dict | None = None,
     extra_headers: dict[str, str] | None = None,
+    *,
+    enable_hsts: bool = False,
+    csp: str | None = None,
 ):
     response = JSONResponse(
         status_code=status_code,
@@ -169,7 +173,7 @@ def _error_response(
     if extra_headers:
         for key, value in extra_headers.items():
             response.headers[key] = value
-    _add_security_headers(response)
+    _add_security_headers(response, enable_hsts=enable_hsts, csp=csp)
     return response
 
 
@@ -295,7 +299,38 @@ def create_app(
     rate_limit_backend: str = "memory",
     rate_limiter=None,
     credentials_secret: str = "local-dev-only-change-me",
+    production_mode: bool = False,
+    enforce_production_security: bool = True,
+    enable_hsts: bool = False,
+    content_security_policy: str | None = None,
+    artifact_backend: str = "local",
+    s3_bucket: str | None = None,
+    s3_endpoint_url: str | None = None,
+    s3_access_key: str | None = None,
+    s3_secret_key: str | None = None,
+    s3_region: str = "us-east-1",
+    s3_prefix: str = "workspace-artifacts",
+    web_fetch_timeout_seconds: float = 20.0,
+    web_fetch_max_bytes: int = 5_000_000,
+    web_table_max_rows: int = 1000,
+    web_text_max_chars: int = 200_000,
 ) -> FastAPI:
+    security_report = validate_production_settings(
+        auth_required=auth_required,
+        auth_secret=auth_secret,
+        admin_api_key=admin_api_key,
+        credentials_secret=credentials_secret,
+        cors_origins=cors_origins,
+        seed_demo_data=seed_demo_data,
+        env={"WORKSPACE_PRODUCTION_MODE": "true" if production_mode else "false"},
+    )
+    if security_report.production_mode and enforce_production_security and not security_report.ok:
+        raise RuntimeError(
+            "production security validation failed: " + "; ".join(security_report.errors)
+        )
+    for warning in security_report.warnings:
+        logger.warning("security_warning %s", warning)
+
     app = FastAPI()
     # Rate limiting supports memory (single instance) or redis (shared multi-instance).
     workflow_runner = workflow_queue or create_workflow_queue(
@@ -321,16 +356,21 @@ def create_app(
         redis_url=redis_url,
     )
     app.state.rate_limiter = limiter
-    allowed_origins = cors_origins or [
-        "http://127.0.0.1:4173",
-        "http://localhost:4173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        "http://127.0.0.1:5174",
-        "http://localhost:5174",
-        "http://127.0.0.1:5175",
-        "http://localhost:5175",
-    ]
+    app.state.security_report = security_report
+    allowed_origins = cors_origins or (
+        []
+        if production_mode
+        else [
+            "http://127.0.0.1:4173",
+            "http://localhost:4173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:5174",
+            "http://localhost:5174",
+            "http://127.0.0.1:5175",
+            "http://localhost:5175",
+        ]
+    )
     open_paths = public_auth_paths()
 
     def _public_user(user: AuthUser | dict) -> dict:
@@ -440,6 +480,8 @@ def create_app(
             status_code=exc.status_code,
             code=f"http_{exc.status_code}",
             message=detail,
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -451,6 +493,8 @@ def create_app(
             code="request_validation_failed",
             message="request validation failed",
             details={"errors": exc.errors()},
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
         )
 
     @app.middleware("http")
@@ -474,7 +518,9 @@ def create_app(
                 status_code=status_code,
                 code=error.code,
                 message=error.message,
-            )
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
+        )
 
         request.state.auth_user = auth_user
         scope_token = set_workspace_scope(tenant_id, owner_id)
@@ -511,7 +557,9 @@ def create_app(
                         "x-ratelimit-remaining": "0",
                         "x-ratelimit-backend": decision.backend,
                     },
-                )
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
+        )
             content_length = request.headers.get("content-length")
             if content_length and int(content_length) > max_request_body_bytes:
                 metrics.observe_request(
@@ -525,7 +573,9 @@ def create_app(
                     status_code=413,
                     code="request_too_large",
                     message="request body too large",
-                )
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
+        )
             if request.url.path not in open_paths and is_write_method(request.method):
                 role = auth_user.role if auth_user else (ROLE_VIEWER if auth_required else ROLE_LOCAL)
                 if not has_permission(role, PERMISSION_WRITE):
@@ -541,7 +591,9 @@ def create_app(
                         code="permission_denied",
                         message="write permission required",
                         details={"role": role, "required": PERMISSION_WRITE},
-                    )
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
+        )
             try:
                 response = await call_next(request)
             except Exception as error:
@@ -585,7 +637,9 @@ def create_app(
                     status_code=500,
                     code="internal_server_error",
                     message="internal server error",
-                )
+            enable_hsts=enable_hsts,
+            csp=content_security_policy,
+        )
 
             duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
             if metrics_enabled and request.url.path not in {"/metrics", "/api/metrics"}:
@@ -604,7 +658,7 @@ def create_app(
             response.headers["x-ratelimit-limit"] = str(decision.limit)
             response.headers["x-ratelimit-remaining"] = str(decision.remaining)
             response.headers["x-ratelimit-backend"] = decision.backend
-            _add_security_headers(response)
+            _add_security_headers(response, enable_hsts=enable_hsts, csp=content_security_policy)
             log_method = logger.warning if response.status_code >= 500 else logger.info
             log_method(
                 "request method=%s path=%s status=%s duration_ms=%s request_id=%s tenant_id=%s user_id=%s",
@@ -648,7 +702,18 @@ def create_app(
         model=model,
         timeout_seconds=model_timeout_seconds,
     )
-    store = ArtifactStore(artifact_dir)
+    store = create_artifact_store(
+        backend=artifact_backend,
+        artifact_dir=artifact_dir,
+        s3_bucket=s3_bucket,
+        s3_endpoint_url=s3_endpoint_url,
+        s3_access_key=s3_access_key,
+        s3_secret_key=s3_secret_key,
+        s3_region=s3_region,
+        s3_prefix=s3_prefix,
+    )
+    app.state.artifact_store = store
+    app.state.artifact_backend = getattr(store, "backend", artifact_backend)
 
     @app.post("/api/auth/register")
     def register_user(payload: AuthRegisterRequest) -> dict:
@@ -806,6 +871,16 @@ def create_app(
                 "required": auth_required,
                 "tokenMinutes": auth_token_minutes,
                 "roles": [ROLE_VIEWER, ROLE_ANALYST, ROLE_ADMIN],
+            },
+            "security": {
+                "productionMode": production_mode,
+                "hsts": enable_hsts,
+                "enforceProductionSecurity": enforce_production_security,
+                "ok": security_report.ok,
+                "warnings": security_report.warnings,
+            },
+            "storage": {
+                "backend": getattr(store, "backend", artifact_backend),
             },
             "observability": {
                 "metricsEnabled": metrics_enabled,
@@ -1070,11 +1145,15 @@ def create_app(
             except ConnectorError as error:
                 raise HTTPException(status_code=400, detail=error.message) from error
         try:
-            rows = fetch_rows(connection.get("connectorType") or "", connection.get("config") or {}, credentials)
-            data_source = build_table_data_source(
+            payload = fetch_connector_payload(
+                connection.get("connectorType") or "",
+                connection.get("config") or {},
+                credentials,
+            )
+            data_source = build_connector_data_source(
                 name=body.datasetName or connection.get("name") or connection_id,
                 connector_type=str(connection.get("connectorType") or "connector"),
-                rows=rows,
+                payload=payload,
                 connection_id=connection_id,
             )
         except ConnectorError as error:
@@ -1087,7 +1166,12 @@ def create_app(
             repo,
             "connection.import",
             connection_id,
-            {"datasetId": dataset.get("id"), "rowCount": dataset.get("rowCount"), "columnCount": dataset.get("columnCount")},
+            {
+                "datasetId": dataset.get("id"),
+                "kind": dataset.get("kind"),
+                "rowCount": dataset.get("rowCount"),
+                "columnCount": dataset.get("columnCount"),
+            },
         )
         return dataset
 
@@ -1118,18 +1202,39 @@ def create_app(
         return repo.list_notifications()
 
     def persist_uploaded_data_source(file_name: str, mime_type: str | None, content: bytes) -> dict:
+        try:
+            checked = validate_upload(
+                file_name=file_name,
+                content_type=mime_type,
+                size_bytes=len(content),
+                max_bytes=max_request_body_bytes,
+                content=content,
+            )
+        except UploadSecurityError as error:
+            raise HTTPException(status_code=400, detail=error.message) from error
         encoded = base64.b64encode(content).decode("ascii")
         try:
-            parsed = ingest_data_source(file_name, mime_type, encoded)
+            parsed = ingest_data_source(checked["fileName"], checked["contentType"], encoded)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        stored = store.save("uploads", file_name, content)
+        stored = store.save("uploads", checked["fileName"], content)
         parsed["storageKey"] = stored["storageKey"]
-        parsed["originalMimeType"] = mime_type or "application/octet-stream"
+        parsed["originalMimeType"] = checked["contentType"]
         parsed["originalFileSize"] = len(content)
         parsed["uploadedAt"] = datetime.now(timezone.utc).isoformat()
+        parsed["storageBackend"] = stored.get("backend") or artifact_backend
         dataset = repo.add_uploaded_dataset(parsed)
-        _audit(repo, "data_source.ingest", dataset["id"], {"kind": parsed["kind"], "formatLabel": parsed["formatLabel"], "rowCount": parsed["rowCount"]})
+        _audit(
+            repo,
+            "data_source.ingest",
+            dataset["id"],
+            {
+                "kind": parsed["kind"],
+                "formatLabel": parsed["formatLabel"],
+                "rowCount": parsed["rowCount"],
+                "storageBackend": parsed.get("storageBackend"),
+            },
+        )
         return dataset
 
     @app.post("/api/data-source/upload")
@@ -1461,6 +1566,59 @@ def create_app(
             "job": job_view,
             "task": task,
         }
+
+    @app.get("/api/workflow/jobs/stream")
+    async def workflow_job_stream(request: Request):
+        """Server-Sent Events stream for current workflow job progress."""
+        import asyncio
+        from fastapi.responses import StreamingResponse
+
+        tenant_id, owner_id = get_workspace_scope()
+
+        async def event_generator():
+            last_payload = None
+            # Keep connection for up to ~10 minutes by default.
+            for _ in range(600):
+                if await request.is_disconnected():
+                    break
+                job_view = workflow_runner.job_public_view(workflow_runner.get_job(tenant_id, owner_id))
+                task = attach_execution_meta(
+                    repo.get_active_task(),
+                    job_view,
+                    mode="async" if workflow_async else "sync",
+                )
+                payload = {
+                    "job": job_view,
+                    "task": {
+                        "id": task.get("id"),
+                        "status": task.get("status"),
+                        "snapshot": task.get("snapshot"),
+                        "execution": task.get("execution"),
+                    },
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+                serialized = json.dumps(payload, ensure_ascii=False)
+                if serialized != last_payload:
+                    yield f"event: workflow\ndata: {serialized}\n\n"
+                    last_payload = serialized
+                status = (job_view or {}).get("status") or (task.get("execution") or {}).get("status")
+                phase = ((task.get("snapshot") or {}).get("phase"))
+                if status in {"succeeded", "failed", "cancelled"} or phase in {
+                    "completed",
+                    "needs_review",
+                    "failed",
+                    "stopped",
+                }:
+                    yield f"event: done\ndata: {serialized}\n\n"
+                    break
+                await asyncio.sleep(1.0)
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
 
     @app.post("/api/workflow/advance")
     def workflow_advance() -> dict:

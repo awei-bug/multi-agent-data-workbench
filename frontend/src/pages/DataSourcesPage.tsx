@@ -55,10 +55,12 @@ function DataSourcesPage() {
   const [lastReadyDataset, setLastReadyDataset] = useState<ApiDataset | null>(null);
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoProgress, setDemoProgress] = useState<DemoProgress | null>(null);
-  const [connName, setConnName] = useState('外部销售接口');
-  const [connectorType, setConnectorType] = useState('http_json');
-  const [httpUrl, setHttpUrl] = useState('https://example.com/api/sales');
+  const [connName, setConnName] = useState('网页数据源');
+  const [connectorType, setConnectorType] = useState('web_page');
+  const [httpUrl, setHttpUrl] = useState('https://example.com/report');
   const [jsonPath, setJsonPath] = useState('data.items');
+  const [webExtractMode, setWebExtractMode] = useState<'auto' | 'table' | 'text'>('auto');
+  const [webTableIndex, setWebTableIndex] = useState('1');
   const [bearerToken, setBearerToken] = useState('');
   const [pgHost, setPgHost] = useState('127.0.0.1');
   const [pgPort, setPgPort] = useState('5432');
@@ -266,6 +268,18 @@ function DataSourcesPage() {
         },
       };
     }
+    if (connectorType === 'web_page') {
+      return {
+        name: connName,
+        connectorType: 'web_page',
+        config: {
+          url: httpUrl,
+          extractMode: webExtractMode,
+          tableIndex: Number(webTableIndex || 1),
+        },
+        credentials: bearerToken ? { bearerToken } : {},
+      };
+    }
     return {
       name: connName,
       connectorType: 'http_json',
@@ -458,7 +472,10 @@ function DataSourcesPage() {
           <span className="section-index">CN</span>
           <div>
             <h3>外部连接器</h3>
-            <p>{selectedType?.description || '创建外部连接，测试后可导入为可分析数据集。'}</p>
+            <p>
+              {selectedType?.description ||
+                '创建外部连接，测试后可导入为可分析数据集。网页抓取支持自动提取表格或正文。'}
+            </p>
           </div>
         </div>
         {writeEnabled ? (
@@ -477,6 +494,7 @@ function DataSourcesPage() {
                 {(connectorTypes.length
                   ? connectorTypes
                   : [
+                      { type: 'web_page', name: '网页抓取' },
                       { type: 'http_json', name: 'HTTP JSON' },
                       { type: 'postgres', name: 'PostgreSQL' },
                     ]
@@ -520,6 +538,48 @@ function DataSourcesPage() {
                     type="password"
                     value={pgPassword}
                     onChange={(event) => setPgPassword(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : connectorType === 'web_page' ? (
+              <>
+                <label className="field-label">
+                  <span>网页 URL</span>
+                  <input
+                    className="text-input"
+                    value={httpUrl}
+                    onChange={(event) => setHttpUrl(event.target.value)}
+                    placeholder="https://example.com/page-with-table"
+                  />
+                </label>
+                <label className="field-label">
+                  <span>提取模式</span>
+                  <select
+                    className="text-input"
+                    value={webExtractMode}
+                    onChange={(event) => setWebExtractMode(event.target.value as 'auto' | 'table' | 'text')}
+                  >
+                    <option value="auto">自动（优先表格）</option>
+                    <option value="table">仅表格</option>
+                    <option value="text">仅正文文本</option>
+                  </select>
+                </label>
+                <label className="field-label">
+                  <span>表格序号（从 1 开始）</span>
+                  <input
+                    className="text-input"
+                    value={webTableIndex}
+                    onChange={(event) => setWebTableIndex(event.target.value)}
+                    placeholder="1"
+                  />
+                </label>
+                <label className="field-label">
+                  <span>Bearer Token（可选）</span>
+                  <input
+                    className="text-input"
+                    type="password"
+                    value={bearerToken}
+                    onChange={(event) => setBearerToken(event.target.value)}
                   />
                 </label>
               </>

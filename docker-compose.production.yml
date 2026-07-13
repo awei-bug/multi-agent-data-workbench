@@ -1,0 +1,173 @@
+# Production-oriented compose with TLS-ready frontend proxy + optional MinIO.
+# Usage:
+#   docker compose -f docker-compose.production.yml --env-file .env.production up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: workbench-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-workbench}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-workbench}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: workbench-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1000", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: workbench-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${WORKSPACE_S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${WORKSPACE_S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+
+  backend:
+    image: ${IMAGE_PREFIX:-workbench}/backend:${IMAGE_TAG:-latest}
+    container_name: workbench-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      WORKSPACE_ENV: production
+      WORKSPACE_PRODUCTION_MODE: "true"
+      WORKSPACE_ENFORCE_PRODUCTION_SECURITY: "true"
+      WORKSPACE_API_HOST: 0.0.0.0
+      WORKSPACE_API_PORT: 8787
+      WORKSPACE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-workbench}
+      WORKSPACE_MODEL_BASE_URL: ${WORKSPACE_MODEL_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      WORKSPACE_MODEL_NAME: ${WORKSPACE_MODEL_NAME:-Agnes 2.0 Flash}
+      WORKSPACE_MODEL_TIMEOUT_SECONDS: ${WORKSPACE_MODEL_TIMEOUT_SECONDS:-60}
+      WORKSPACE_LOG_LEVEL: ${WORKSPACE_LOG_LEVEL:-INFO}
+      WORKSPACE_JSON_LOGS: "true"
+      WORKSPACE_RUN_MIGRATIONS_ON_START: "true"
+      WORKSPACE_ENABLE_AUDIT_EVENTS: "true"
+      WORKSPACE_AUTH_REQUIRED: "true"
+      WORKSPACE_AUTH_SECRET: ${WORKSPACE_AUTH_SECRET:?set WORKSPACE_AUTH_SECRET}
+      WORKSPACE_AUTH_TOKEN_MINUTES: ${WORKSPACE_AUTH_TOKEN_MINUTES:-720}
+      WORKSPACE_ADMIN_API_KEY: ${WORKSPACE_ADMIN_API_KEY:?set WORKSPACE_ADMIN_API_KEY}
+      WORKSPACE_CREDENTIALS_SECRET: ${WORKSPACE_CREDENTIALS_SECRET:?set WORKSPACE_CREDENTIALS_SECRET}
+      WORKSPACE_CORS_ORIGINS: ${WORKSPACE_CORS_ORIGINS:?set WORKSPACE_CORS_ORIGINS}
+      WORKSPACE_ENABLE_HSTS: "true"
+      WORKSPACE_QUEUE_BACKEND: redis
+      WORKSPACE_REDIS_URL: redis://redis:6379/0
+      WORKSPACE_RATE_LIMIT_BACKEND: redis
+      WORKSPACE_RATE_LIMIT_PER_MINUTE: ${WORKSPACE_RATE_LIMIT_PER_MINUTE:-120}
+      WORKSPACE_ARTIFACT_BACKEND: ${WORKSPACE_ARTIFACT_BACKEND:-s3}
+      WORKSPACE_ARTIFACT_DIR: workspace-artifacts
+      WORKSPACE_S3_BUCKET: ${WORKSPACE_S3_BUCKET:-workbench-artifacts}
+      WORKSPACE_S3_ENDPOINT_URL: ${WORKSPACE_S3_ENDPOINT_URL:-http://minio:9000}
+      WORKSPACE_S3_ACCESS_KEY: ${WORKSPACE_S3_ACCESS_KEY:-minioadmin}
+      WORKSPACE_S3_SECRET_KEY: ${WORKSPACE_S3_SECRET_KEY:-minioadmin}
+      WORKSPACE_S3_REGION: ${WORKSPACE_S3_REGION:-us-east-1}
+      WORKSPACE_S3_PREFIX: ${WORKSPACE_S3_PREFIX:-workspace-artifacts}
+      WORKSPACE_METRICS_ENABLED: "true"
+      WORKSPACE_ERROR_TRACKING_ENABLED: "true"
+      WORKSPACE_SENTRY_DSN: ${WORKSPACE_SENTRY_DSN:-}
+      WORKSPACE_SENTRY_ENVIRONMENT: production
+      WORKSPACE_ALERT_WEBHOOK_URL: ${WORKSPACE_ALERT_WEBHOOK_URL:-}
+      APIHUB_API_KEY: ${APIHUB_API_KEY:-}
+    volumes:
+      - backend_artifacts:/app/workspace-artifacts
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health/ready')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    image: ${IMAGE_PREFIX:-workbench}/backend:${IMAGE_TAG:-latest}
+    container_name: workbench-worker
+    restart: unless-stopped
+    command: ["python", "start-workflow-worker.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      WORKSPACE_ENV: production
+      WORKSPACE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-workbench}
+      WORKSPACE_MODEL_BASE_URL: ${WORKSPACE_MODEL_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      WORKSPACE_MODEL_NAME: ${WORKSPACE_MODEL_NAME:-Agnes 2.0 Flash}
+      WORKSPACE_MODEL_TIMEOUT_SECONDS: ${WORKSPACE_MODEL_TIMEOUT_SECONDS:-60}
+      WORKSPACE_LOG_LEVEL: ${WORKSPACE_LOG_LEVEL:-INFO}
+      WORKSPACE_JSON_LOGS: "true"
+      WORKSPACE_QUEUE_BACKEND: redis
+      WORKSPACE_REDIS_URL: redis://redis:6379/0
+      WORKSPACE_ARTIFACT_BACKEND: ${WORKSPACE_ARTIFACT_BACKEND:-s3}
+      WORKSPACE_ARTIFACT_DIR: workspace-artifacts
+      WORKSPACE_S3_BUCKET: ${WORKSPACE_S3_BUCKET:-workbench-artifacts}
+      WORKSPACE_S3_ENDPOINT_URL: ${WORKSPACE_S3_ENDPOINT_URL:-http://minio:9000}
+      WORKSPACE_S3_ACCESS_KEY: ${WORKSPACE_S3_ACCESS_KEY:-minioadmin}
+      WORKSPACE_S3_SECRET_KEY: ${WORKSPACE_S3_SECRET_KEY:-minioadmin}
+      WORKSPACE_S3_REGION: ${WORKSPACE_S3_REGION:-us-east-1}
+      WORKSPACE_S3_PREFIX: ${WORKSPACE_S3_PREFIX:-workspace-artifacts}
+      APIHUB_API_KEY: ${APIHUB_API_KEY:-}
+    volumes:
+      - backend_artifacts:/app/workspace-artifacts
+
+  frontend:
+    image: ${IMAGE_PREFIX:-workbench}/frontend:${IMAGE_TAG:-latest}
+    container_name: workbench-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_HTTP_PORT:-80}:80"
+      - "${FRONTEND_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx/nginx.https.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TLS_CERT_DIR:-./deploy/certs}:/etc/nginx/certs:ro
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: workbench-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  backend_artifacts:
+  grafana_data:

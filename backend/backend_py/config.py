@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from backend_py.observability import configure_logging as configure_observability_logging
+from backend_py.security import is_production_mode
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,21 @@ class RuntimeSettings:
     error_tracking_enabled: bool
     rate_limit_backend: str
     credentials_secret: str
+    production_mode: bool
+    enforce_production_security: bool
+    enable_hsts: bool
+    content_security_policy: str | None
+    artifact_backend: str
+    s3_bucket: str | None
+    s3_endpoint_url: str | None
+    s3_access_key: str | None
+    s3_secret_key: str | None
+    s3_region: str
+    s3_prefix: str
+    web_fetch_timeout_seconds: float
+    web_fetch_max_bytes: int
+    web_table_max_rows: int
+    web_text_max_chars: int
 
 
 def configure_logging(level: str, *, json_logs: bool = False) -> None:
@@ -54,8 +70,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
     api_key = values.get("AGNES_API_KEY") or values.get("OPENAI_API_KEY") or values.get("APIHUB_API_KEY") or ""
 
     cors_origins = [origin.strip() for origin in values.get("WORKSPACE_CORS_ORIGINS", "").split(",") if origin.strip()]
+    production_mode = is_production_mode(dict(values))
     auth_secret = values.get("WORKSPACE_AUTH_SECRET", "").strip()
-    if not auth_secret:
+    if not auth_secret and not production_mode:
         # Deterministic local default keeps single-node demos working; override in production.
         auth_secret = "local-dev-only-change-me"
     credentials_secret = values.get("WORKSPACE_CREDENTIALS_SECRET", "").strip() or auth_secret
@@ -68,6 +85,14 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
     alert_min_level = (values.get("WORKSPACE_ALERT_MIN_LEVEL", "error") or "error").strip().lower()
     if alert_min_level not in {"warning", "error", "fatal", "critical"}:
         alert_min_level = "error"
+    artifact_backend = (values.get("WORKSPACE_ARTIFACT_BACKEND", "local") or "local").strip().lower()
+    if artifact_backend not in {"local", "s3", "minio"}:
+        artifact_backend = "local"
+    auth_required_raw = values.get("WORKSPACE_AUTH_REQUIRED")
+    if auth_required_raw is None:
+        auth_required = production_mode
+    else:
+        auth_required = auth_required_raw.lower() == "true"
 
     return RuntimeSettings(
         api_key=api_key,
@@ -89,7 +114,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         run_migrations_on_start=values.get("WORKSPACE_RUN_MIGRATIONS_ON_START", "true").lower() != "false",
         auth_secret=auth_secret,
         auth_token_minutes=int(values.get("WORKSPACE_AUTH_TOKEN_MINUTES", "720")),
-        auth_required=values.get("WORKSPACE_AUTH_REQUIRED", "false").lower() == "true",
+        auth_required=auth_required,
         workflow_async=values.get("WORKSPACE_WORKFLOW_ASYNC", "true").lower() != "false",
         workflow_step_delay_ms=int(values.get("WORKSPACE_WORKFLOW_STEP_DELAY_MS", "0")),
         json_logs=values.get("WORKSPACE_JSON_LOGS", "false").lower() == "true",
@@ -104,4 +129,19 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         error_tracking_enabled=values.get("WORKSPACE_ERROR_TRACKING_ENABLED", "true").lower() != "false",
         rate_limit_backend=rate_limit_backend,
         credentials_secret=credentials_secret,
+        production_mode=production_mode,
+        enforce_production_security=values.get("WORKSPACE_ENFORCE_PRODUCTION_SECURITY", "true").lower() != "false",
+        enable_hsts=values.get("WORKSPACE_ENABLE_HSTS", "true" if production_mode else "false").lower() == "true",
+        content_security_policy=values.get("WORKSPACE_CONTENT_SECURITY_POLICY") or None,
+        artifact_backend=artifact_backend,
+        s3_bucket=values.get("WORKSPACE_S3_BUCKET") or None,
+        s3_endpoint_url=values.get("WORKSPACE_S3_ENDPOINT_URL") or None,
+        s3_access_key=values.get("WORKSPACE_S3_ACCESS_KEY") or None,
+        s3_secret_key=values.get("WORKSPACE_S3_SECRET_KEY") or None,
+        s3_region=values.get("WORKSPACE_S3_REGION", "us-east-1"),
+        s3_prefix=values.get("WORKSPACE_S3_PREFIX", "workspace-artifacts"),
+        web_fetch_timeout_seconds=float(values.get("WORKSPACE_WEB_FETCH_TIMEOUT_SECONDS", "20")),
+        web_fetch_max_bytes=int(values.get("WORKSPACE_WEB_FETCH_MAX_BYTES", "5000000")),
+        web_table_max_rows=int(values.get("WORKSPACE_WEB_TABLE_MAX_ROWS", "1000")),
+        web_text_max_chars=int(values.get("WORKSPACE_WEB_TEXT_MAX_CHARS", "200000")),
     )

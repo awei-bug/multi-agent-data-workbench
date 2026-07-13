@@ -1,0 +1,9 @@
+apiVersion: 1
+
+datasources:
+  - name: WorkbenchMetrics
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL:-http://host.docker.internal:9090}
+    isDefault: true
+    editable: true

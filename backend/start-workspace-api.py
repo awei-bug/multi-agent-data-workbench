@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from backend_py.app import create_app
 from backend_py.config import configure_logging, load_settings
+from backend_py.security import validate_production_settings
 
 
 def run_migrations(database_url: str | None) -> None:
@@ -25,6 +26,16 @@ def run_migrations(database_url: str | None) -> None:
 def main() -> None:
     settings = load_settings()
     configure_logging(settings.log_level, json_logs=settings.json_logs)
+    report = validate_production_settings(
+        auth_required=settings.auth_required,
+        auth_secret=settings.auth_secret,
+        admin_api_key=settings.admin_api_key,
+        credentials_secret=settings.credentials_secret,
+        cors_origins=settings.cors_origins,
+        seed_demo_data=False,
+    )
+    if settings.production_mode and settings.enforce_production_security and not report.ok:
+        raise SystemExit("production security validation failed: " + "; ".join(report.errors))
     if settings.run_migrations_on_start:
         run_migrations(settings.database_url)
     app = create_app(
@@ -58,6 +69,21 @@ def main() -> None:
         alert_min_level=settings.alert_min_level,
         rate_limit_backend=settings.rate_limit_backend,
         credentials_secret=settings.credentials_secret,
+        production_mode=settings.production_mode,
+        enforce_production_security=settings.enforce_production_security,
+        enable_hsts=settings.enable_hsts,
+        content_security_policy=settings.content_security_policy,
+        artifact_backend=settings.artifact_backend,
+        s3_bucket=settings.s3_bucket,
+        s3_endpoint_url=settings.s3_endpoint_url,
+        s3_access_key=settings.s3_access_key,
+        s3_secret_key=settings.s3_secret_key,
+        s3_region=settings.s3_region,
+        s3_prefix=settings.s3_prefix,
+        web_fetch_timeout_seconds=settings.web_fetch_timeout_seconds,
+        web_fetch_max_bytes=settings.web_fetch_max_bytes,
+        web_table_max_rows=settings.web_table_max_rows,
+        web_text_max_chars=settings.web_text_max_chars,
     )
     uvicorn.run(app, host=settings.host, port=settings.port)
 

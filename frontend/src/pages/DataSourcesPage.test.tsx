@@ -78,7 +78,7 @@ describe('data sources page', () => {
     expect(await screen.findByText('sales.csv')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '用于新分析' }));
     expect(activeTask.dataSource?.fileName).toBe('sales.csv');
-    expect(screen.getByText('已绑定 sales.csv，可以进入工作台配置需求。')).toBeInTheDocument();
+    expect(screen.getByText(/已绑定 sales\.csv/)).toBeInTheDocument();
     fetchMock.mockRestore();
   });
 
@@ -164,7 +164,7 @@ describe('data sources page', () => {
 
     expect(await screen.findByText('sales.csv')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '删除' }));
-    expect(screen.getByText('已删除 sales.csv。')).toBeInTheDocument();
+    expect(screen.getByText(/已删除 sales\.csv/)).toBeInTheDocument();
     expect(screen.queryByText('sales.csv')).not.toBeInTheDocument();
     confirmMock.mockRestore();
     fetchMock.mockRestore();

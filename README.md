@@ -260,11 +260,18 @@ powershell -ExecutionPolicy Bypass -File tools\verify-project.ps1
 - 管理接口保护骨架
 - Docker Compose 编排
 - 自动迁移数据库
+- JWT 登录/注册、refresh 轮换与会话撤销
+- RBAC（viewer / analyst / admin）
+- Redis 可靠队列（processing lease / 重试 / 死信）
+- 对象存储租户前缀隔离
+- 生产安全强制校验与安全响应头
+- CI/CD、Staging/Production 发布路径
 
-当前还未完全企业化的部分：
+仍需持续推进的企业级项：
 
-- 完整用户鉴权体系
-- 细粒度 RBAC
-- 多实例共享限流
-- 任务队列与异步 Worker
-- 监控告警与自动化发布流水线
+- HttpOnly Cookie / BFF 会话（当前 token 仍在前端存储，已禁止 URL 携带长期 token）
+- MFA / SCIM
+- Postgres RLS 与字段级分类分级
+- 完整设计系统 / i18n / a11y 门禁
+- 负载压测与 SLO 告警闭环
+- 更细粒度的项目空间与资源 ACL

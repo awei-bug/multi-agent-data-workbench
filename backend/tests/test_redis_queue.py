@@ -44,6 +44,34 @@ class FakeRedis:
             return None
         return key, self.lists[key].pop()
 
+    def brpoplpush(self, source: str, destination: str, timeout: int = 0):
+        del timeout
+        if not self.lists[source]:
+            return None
+        value = self.lists[source].pop()
+        self.lists[destination].appendleft(value)
+        return value
+
+    def lrange(self, key: str, start: int, end: int):
+        values = list(self.lists.get(key, deque()))
+        if end == -1:
+            end = len(values) - 1
+        if not values:
+            return []
+        return values[start : end + 1]
+
+    def lrem(self, key: str, count: int, value: str):
+        items = list(self.lists.get(key, deque()))
+        removed = 0
+        next_items: list[str] = []
+        for item in items:
+            if item == value and (count == 0 or removed < abs(count)):
+                removed += 1
+                continue
+            next_items.append(item)
+        self.lists[key] = deque(next_items)
+        return removed
+
     def pipeline(self):
         return FakeRedisPipeline(self)
 

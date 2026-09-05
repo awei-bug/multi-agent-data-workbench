@@ -13,3 +13,5 @@ sqlalchemy==2.0.36
 redis==5.2.1
 sentry-sdk==2.19.2
 boto3==1.35.99
+# Optional but recommended for JS-heavy smart scrape pages.
+playwright==1.49.1

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AUTH_CHANGED_EVENT,
   clearAuthSession,
   DEFAULT_WORKSPACE_TENANT_ID,
   DEFAULT_WORKSPACE_USER_ID,
@@ -29,9 +30,10 @@ describe('workspaceIdentity', () => {
     const headers = init?.headers as Headers;
     expect(headers.get('x-workspace-tenant-id')).toBe('tenant-a');
     expect(headers.get('x-workspace-user-id')).toBe('user-a');
+    expect(init?.credentials).toBe('include');
   });
 
-  it('appends workspace identity to download query', () => {
+  it('appends workspace identity to download query without access tokens', () => {
     resetWorkspaceIdentity();
 
     expect(withWorkspaceQuery('/api/files/1/download')).toBe(
@@ -39,9 +41,10 @@ describe('workspaceIdentity', () => {
     );
   });
 
-  it('prefers jwt session identity and authorization header', async () => {
+  it('stores user profile without long-lived tokens in localStorage', async () => {
     saveAuthSession({
       accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
       user: {
         id: 'user-jwt',
         username: 'analyst',
@@ -52,19 +55,46 @@ describe('workspaceIdentity', () => {
     });
     saveWorkspaceIdentity({ tenantId: 'should-not-win', userId: 'should-not-win' });
 
+    expect(window.localStorage.getItem('workspace.accessToken')).toBeNull();
+    expect(window.localStorage.getItem('workspace.refreshToken')).toBeNull();
+    expect(getAuthSession()?.user.username).toBe('analyst');
+    expect(getAuthSession()?.accessToken).toBeUndefined();
+
     const fetchMock = vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
     await workspaceFetch('/api/demo');
 
     const [, init] = fetchMock.mock.calls[0];
     const headers = init?.headers as Headers;
-    expect(headers.get('authorization')).toBe('Bearer token-abc');
     expect(headers.get('x-workspace-tenant-id')).toBe('tenant-jwt');
     expect(headers.get('x-workspace-user-id')).toBe('user-jwt');
-    expect(withWorkspaceHeaders().get('authorization')).toBe('Bearer token-abc');
-    expect(withWorkspaceQuery('/api/files/1/download')).toContain('accessToken=token-abc');
-    expect(getAuthSession()?.user.username).toBe('analyst');
+    expect(withWorkspaceQuery('/api/files/1/download')).not.toContain('accessToken=');
+    expect(withWorkspaceHeaders().get('x-workspace-tenant-id')).toBe('tenant-jwt');
 
     clearAuthSession();
     expect(getAuthSession()).toBeNull();
+  });
+
+  it('dispatches auth changed event when session is saved or cleared', () => {
+    const listener = vi.fn();
+    window.addEventListener(AUTH_CHANGED_EVENT, listener);
+
+    saveAuthSession({
+      accessToken: 'token-event',
+      user: {
+        id: 'user-event',
+        username: 'event',
+        tenantId: 'tenant-event',
+        displayName: 'Event',
+        role: 'analyst',
+      },
+    });
+    expect(listener).toHaveBeenCalled();
+    expect(getAuthSession()?.user.id).toBe('user-event');
+
+    clearAuthSession();
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(getAuthSession()).toBeNull();
+
+    window.removeEventListener(AUTH_CHANGED_EVENT, listener);
   });
 });

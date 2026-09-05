@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import ChartBoard from '../components/charts/ChartBoard';
+import ChartBoard from '../components/charts/LazyChartBoard';
+import EmptyState from '../components/feedback/EmptyState';
 import { useWorkbenchShell } from '../context/WorkbenchShellContext';
 import { aggregateComparisonRows, getAnalysisRows, getNumericFields } from '../utils/dataAnalysis';
+import { workspaceFetch } from '../utils/workspaceIdentity';
 
 function formatValue(value: number) {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value);
 }
 
 function ChatAnalysisPage() {
-  const { activeTask } = useWorkbenchShell();
+  const { activeTask, setActiveTask, setContext } = useWorkbenchShell();
+  const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL ?? '';
   const dataSource = activeTask.dataSource;
   const rows = getAnalysisRows(dataSource);
   const fields = dataSource?.columns?.map((column) => column.name) ?? [];
@@ -25,15 +28,52 @@ function ChatAnalysisPage() {
   const [metric, setMetric] = useState('');
 
   useEffect(() => {
-    const nextMetric = numericFields[0] ?? '';
-    setMetric(nextMetric);
-    setDimension(fields.find((field) => field !== nextMetric) ?? fields[0] ?? '');
-  }, [dataSource?.fileName]);
+    let cancelled = false;
+    void workspaceFetch(`${apiBaseUrl}/api/tasks/active`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((task) => {
+        if (cancelled || !task) return;
+        setActiveTask((current) => ({
+          ...current,
+          ...task,
+          dataSource: task.dataSource ?? current.dataSource,
+          artifacts: task.artifacts ?? current.artifacts,
+          exports: task.exports ?? current.exports,
+          risks: task.risks ?? current.risks,
+          executionLog: task.executionLog ?? current.executionLog,
+          intent: task.intent ?? current.intent,
+          snapshot: task.snapshot ?? current.snapshot,
+          execution: task.execution ? { ...(current.execution || {}), ...task.execution } : current.execution,
+        }));
+        if (task.snapshot?.context) setContext(task.snapshot.context);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, setActiveTask, setContext]);
 
-  const points = useMemo(
-    () => (dimension && metric ? aggregateComparisonRows(rows, dimension, metric).sort((left, right) => right.value - left.value) : []),
-    [dimension, metric, rows],
-  );
+  useEffect(() => {
+    const nextMetric = String(metricArtifact?.content?.metric ?? numericFields[0] ?? '');
+    const nextDimension = String(
+      metricArtifact?.content?.dimension
+        ?? fields.find((field) => field !== nextMetric)
+        ?? fields[0]
+        ?? '',
+    );
+    setMetric(nextMetric);
+    setDimension(nextDimension);
+  }, [
+    dataSource?.fileName,
+    metricArtifact?.content?.metric,
+    metricArtifact?.content?.dimension,
+    fields.join('|'),
+    numericFields.join('|'),
+  ]);
+
+  const points = dimension && metric
+    ? aggregateComparisonRows(rows, dimension, metric).sort((left, right) => right.value - left.value)
+    : [];
 
   const total = points.reduce((sum, point) => sum + point.value, 0);
   const average = points.length ? total / points.length : 0;
@@ -44,11 +84,11 @@ function ChatAnalysisPage() {
     return (
       <div className="workspace-grid compact-page">
         <section className="enterprise-page-hero">
-          <span className="enterprise-page-kicker">数据洞察 / 分析中枢</span>
+          <span className="enterprise-page-kicker">图表与结论 / 分析中枢</span>
           <div className="enterprise-page-title-row">
             <div>
               <h3>分析结果总览</h3>
-              <p>这里集中展示当前任务的数据洞察、文档结论和图表预览。先在工作台上传数据并启动流程，系统才会生成可视化结果。</p>
+              <p>这里集中展示当前任务的图表与结论、文档结论和图表预览。先在工作台上传数据并启动流程，系统才会生成可视化结果。</p>
             </div>
           </div>
         </section>
@@ -77,14 +117,15 @@ function ChatAnalysisPage() {
         </section>
 
         <section className="content-card workspace-section">
-          <div className="section-heading">
-            <span className="section-index">IA</span>
-            <div>
-              <h3>数据洞察</h3>
-              <p>上传文件后，这里会自动展示关键指标、图表预览和分组排行。</p>
-            </div>
-          </div>
-          <p className="status-note">请先在工作台完成数据源接入并启动分析。</p>
+          <EmptyState
+            icon="IA"
+            title="还没有可洞察的数据"
+            description="先绑定数据源并启动工作流，这里会集中展示指标、图表和结论。"
+            primaryLabel="去接入数据源"
+            primaryHref="/data-sources"
+            secondaryLabel="进入工作台"
+            secondaryHref="/workspace?step=input"
+          />
         </section>
       </div>
     );
@@ -226,7 +267,7 @@ function ChatAnalysisPage() {
           <div className="section-heading">
             <span className="section-index">IA</span>
             <div>
-              <h3>数据洞察</h3>
+              <h3>图表与结论</h3>
               <p>系统需要至少一个可聚合数值字段，才能生成排行、图表和统计结论。</p>
             </div>
           </div>
@@ -239,7 +280,7 @@ function ChatAnalysisPage() {
   return (
     <div className="workspace-grid compact-page">
       <section className="enterprise-page-hero">
-        <span className="enterprise-page-kicker">数据洞察 / 图表与排行</span>
+        <span className="enterprise-page-kicker">图表与结论 / 图表与排行</span>
         <div className="enterprise-page-title-row">
           <div>
             <h3>结构化数据分析结果台</h3>

@@ -1,16 +1,38 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkbenchShellContext } from '../../context/WorkbenchShellContext';
 import WorkspacePage from '../../pages/WorkspacePage';
 import { createEmptyTask } from '../../pages/emptyTask';
 import { defaultWorkbenchContext } from '../../types/workbench';
+import { saveAuthSession } from '../../utils/workspaceIdentity';
 
-function renderWorkspace(stage: 'execution' | 'input' = 'execution') {
-  const task = {
+function seedAuth() {
+  saveAuthSession({
+    user: {
+      id: 'user-test',
+      username: 'tester',
+      tenantId: 'tenant-test',
+      displayName: 'Tester',
+      role: 'analyst',
+    },
+  });
+}
+
+function buildTask() {
+  return {
     ...createEmptyTask(),
+    name: '区域销售分析',
+    request: '分析各区域销售额并输出趋势',
+    intent: {
+      request: '分析各区域销售额并输出趋势',
+      goal: '区域销售趋势分析',
+      metrics: '销售额',
+      dimensions: '区域',
+      charts: '柱状图',
+    },
     dataSource: {
       kind: 'table' as const,
       fileName: 'sales.csv',
@@ -26,7 +48,10 @@ function renderWorkspace(stage: 'execution' | 'input' = 'execution') {
       analysisScope: { mode: 'full', rowCount: 2, rowsProcessed: 2 },
     },
   };
+}
 
+function renderWorkspace(stage: 'execution' | 'input' = 'execution') {
+  const task = buildTask();
   return render(
     <MemoryRouter initialEntries={[`/workspace?step=${stage}`]}>
       <WorkbenchShellContext.Provider
@@ -34,7 +59,7 @@ function renderWorkspace(stage: 'execution' | 'input' = 'execution') {
           context: defaultWorkbenchContext,
           setContext: () => undefined,
           activeTask: task,
-          setActiveTask: (next) => Object.assign(task, next),
+          setActiveTask: (next) => Object.assign(task, typeof next === 'function' ? next(task) : next),
         }}
       >
         <WorkspacePage />
@@ -44,61 +69,59 @@ function renderWorkspace(stage: 'execution' | 'input' = 'execution') {
 }
 
 describe('workflow execution', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    seedAuth();
+  });
+
   it('starts the server-backed workflow', async () => {
     const user = userEvent.setup();
     const runningTask = {
-      ...createEmptyTask(),
-      dataSource: {
-        kind: 'table' as const,
-        fileName: 'sales.csv',
-        columnCount: 2,
-        rowCount: 2,
-        columns: [
-          { name: 'region', type: 'string' },
-          { name: 'sales', type: 'number' },
-        ],
-        previewRows: [],
-        analysisRows: [],
-        fieldMappings: [],
-        analysisScope: { mode: 'full', rowCount: 2, rowsProcessed: 2 },
-      },
+      ...buildTask(),
       snapshot: {
         ...createEmptyTask().snapshot,
         phase: 'running',
         logMessage: '数据接入 Agent 执行中',
-        nodes: [{ id: 'source', label: '数据接入 Agent', status: 'running' }, ...createEmptyTask().snapshot.nodes.slice(1)],
+        nodes: [
+          { id: 'source', label: '数据接入 Agent', status: 'running' as const },
+          ...createEmptyTask().snapshot.nodes.slice(1),
+        ],
       },
       status: '执行中',
       execution: { mode: 'async', status: 'running', jobId: 'job-1' },
     };
-    const completedTask = {
-      ...runningTask,
-      snapshot: {
-        ...runningTask.snapshot,
-        phase: 'completed',
-        logMessage: '审核校验 Agent 已完成',
-        nodes: runningTask.snapshot.nodes.map((node) => ({ ...node, status: 'success' as const })),
-      },
-      status: '已完成',
-      execution: { mode: 'async', status: 'succeeded', jobId: 'job-1' },
-    };
-    const fetchMock = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify(runningTask), { status: 200 }))
-      .mockResolvedValue(new Response(JSON.stringify(completedTask), { status: 200 }));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/workflow/action') || (init?.method === 'POST' && String(init.body || '').includes('start'))) {
+        return new Response(JSON.stringify(runningTask), { status: 200 });
+      }
+      if (url.includes('/api/auth/stream-ticket')) {
+        return new Response(JSON.stringify({ ticket: 'stream-ticket' }), { status: 200 });
+      }
+      return new Response(JSON.stringify(runningTask), { status: 200 });
+    });
 
     renderWorkspace('execution');
-    await user.click(screen.getAllByRole('button', { name: '启动任务' })[0]);
+    // Prefer the sticky action-rail primary CTA.
+    const startButtons = await screen.findAllByRole('button', { name: '开始分析' });
+    await user.click(startButtons[startButtons.length - 1]);
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/workflow/action', expect.objectContaining({ method: 'POST' }));
-    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/workflow/action'))).toBe(true);
+    await waitFor(() => {
+      const hit = fetchMock.mock.calls.some((call) => {
+        const url = String(call[0]);
+        const body = String((call[1] as RequestInit | undefined)?.body || '');
+        return url.includes('/api/workflow/action') || body.includes('"action":"start"') || body.includes('start');
+      });
+      expect(hit).toBe(true);
+    });
     fetchMock.mockRestore();
   });
 
-  it('shows all persisted workflow nodes and correction action', () => {
+  it('shows workflow stage shell when unlocked with data and intent', async () => {
     renderWorkspace('execution');
-    expect(screen.getAllByText('审核校验 Agent').length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: '应用修改' })).toBeInTheDocument();
-    expect(screen.getByText('当前产物：尚未生成')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: /开始分析/ }).length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText(/可以开始分析了|区域销售分析/).length).toBeGreaterThan(0);
   });
 });

@@ -9,13 +9,38 @@ from urllib.parse import urlparse
 
 
 class ArtifactStoreProtocol(Protocol):
-    def save(self, category: str, file_name: str, content: bytes) -> dict: ...
+    def save(self, category: str, file_name: str, content: bytes, *, tenant_id: str | None = None) -> dict: ...
 
-    def resolve(self, storage_key: str) -> Path: ...
+    def resolve(self, storage_key: str, *, tenant_id: str | None = None) -> Path: ...
 
-    def read(self, storage_key: str) -> bytes: ...
+    def read(self, storage_key: str, *, tenant_id: str | None = None) -> bytes: ...
 
-    def delete(self, storage_key: str) -> None: ...
+    def delete(self, storage_key: str, *, tenant_id: str | None = None) -> None: ...
+
+
+def _safe_segment(value: str, *, fallback: str = "default") -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", (value or "").strip()).strip("-_")
+    return cleaned or fallback
+
+
+def build_tenant_storage_key(category: str, file_name: str, *, tenant_id: str | None, artifact_id: str | None = None) -> str:
+    safe_category = _safe_segment(category, fallback="artifacts").lower()
+    safe_name = Path(file_name).name or "artifact"
+    safe_tenant = _safe_segment(tenant_id or "local-tenant", fallback="local-tenant")
+    artifact = artifact_id or str(uuid4())
+    return f"tenants/{safe_tenant}/{safe_category}/{artifact}-{safe_name}"
+
+
+def assert_storage_key_tenant(storage_key: str, tenant_id: str | None) -> None:
+    """Reject cross-tenant object access when a tenant scope is provided."""
+    if not tenant_id:
+        return
+    clean = (storage_key or "").replace("\\", "/").lstrip("/")
+    expected_prefix = f"tenants/{_safe_segment(tenant_id, fallback='local-tenant')}/"
+    # Legacy keys without tenant prefix remain readable only within the same process
+    # when no prefix is present; once tenant-prefixed, enforce hard isolation.
+    if clean.startswith("tenants/") and not clean.startswith(expected_prefix):
+        raise PermissionError("artifact does not belong to current tenant")
 
 
 class LocalArtifactStore:
@@ -24,33 +49,34 @@ class LocalArtifactStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.backend = "local"
 
-    def save(self, category: str, file_name: str, content: bytes) -> dict:
-        safe_category = re.sub(r"[^a-z0-9_-]+", "-", category.lower()).strip("-") or "artifacts"
-        safe_name = Path(file_name).name or "artifact"
+    def save(self, category: str, file_name: str, content: bytes, *, tenant_id: str | None = None) -> dict:
         artifact_id = str(uuid4())
-        path = self.root / safe_category / f"{artifact_id}-{safe_name}"
+        storage_key = build_tenant_storage_key(category, file_name, tenant_id=tenant_id, artifact_id=artifact_id)
+        path = self.root / storage_key
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         return {
             "id": artifact_id,
-            "storageKey": str(path.relative_to(self.root)).replace("\\", "/"),
-            "fileName": safe_name,
+            "storageKey": storage_key,
+            "fileName": Path(file_name).name or "artifact",
             "byteSize": len(content),
             "checksum": hashlib.sha256(content).hexdigest(),
             "backend": self.backend,
+            "tenantId": _safe_segment(tenant_id or "local-tenant", fallback="local-tenant"),
         }
 
-    def resolve(self, storage_key: str) -> Path:
+    def resolve(self, storage_key: str, *, tenant_id: str | None = None) -> Path:
+        assert_storage_key_tenant(storage_key, tenant_id)
         path = (self.root / storage_key).resolve()
         if self.root.resolve() not in path.parents and path != self.root.resolve():
             raise ValueError("invalid artifact path")
         return path
 
-    def read(self, storage_key: str) -> bytes:
-        return self.resolve(storage_key).read_bytes()
+    def read(self, storage_key: str, *, tenant_id: str | None = None) -> bytes:
+        return self.resolve(storage_key, tenant_id=tenant_id).read_bytes()
 
-    def delete(self, storage_key: str) -> None:
-        self.resolve(storage_key).unlink(missing_ok=True)
+    def delete(self, storage_key: str, *, tenant_id: str | None = None) -> None:
+        self.resolve(storage_key, tenant_id=tenant_id).unlink(missing_ok=True)
 
 
 class S3ArtifactStore:
@@ -102,11 +128,9 @@ class S3ArtifactStore:
                 # Bucket may already exist or require external provisioning.
                 pass
 
-    def save(self, category: str, file_name: str, content: bytes) -> dict:
-        safe_category = re.sub(r"[^a-z0-9_-]+", "-", category.lower()).strip("-") or "artifacts"
-        safe_name = Path(file_name).name or "artifact"
+    def save(self, category: str, file_name: str, content: bytes, *, tenant_id: str | None = None) -> dict:
         artifact_id = str(uuid4())
-        storage_key = f"{safe_category}/{artifact_id}-{safe_name}"
+        storage_key = build_tenant_storage_key(category, file_name, tenant_id=tenant_id, artifact_id=artifact_id)
         key = self._object_key(storage_key)
         self._client.put_object(
             Bucket=self.bucket,
@@ -121,13 +145,15 @@ class S3ArtifactStore:
         return {
             "id": artifact_id,
             "storageKey": storage_key,
-            "fileName": safe_name,
+            "fileName": Path(file_name).name or "artifact",
             "byteSize": len(content),
             "checksum": hashlib.sha256(content).hexdigest(),
             "backend": self.backend,
+            "tenantId": _safe_segment(tenant_id or "local-tenant", fallback="local-tenant"),
         }
 
-    def resolve(self, storage_key: str) -> Path:
+    def resolve(self, storage_key: str, *, tenant_id: str | None = None) -> Path:
+        assert_storage_key_tenant(storage_key, tenant_id)
         # Materialize object into local cache for FileResponse compatibility.
         cache_path = self.local_cache_dir / storage_key
         if cache_path.exists():
@@ -137,12 +163,14 @@ class S3ArtifactStore:
         self._client.download_file(self.bucket, key, str(cache_path))
         return cache_path
 
-    def read(self, storage_key: str) -> bytes:
+    def read(self, storage_key: str, *, tenant_id: str | None = None) -> bytes:
+        assert_storage_key_tenant(storage_key, tenant_id)
         key = self._object_key(storage_key)
         response = self._client.get_object(Bucket=self.bucket, Key=key)
         return response["Body"].read()
 
-    def delete(self, storage_key: str) -> None:
+    def delete(self, storage_key: str, *, tenant_id: str | None = None) -> None:
+        assert_storage_key_tenant(storage_key, tenant_id)
         key = self._object_key(storage_key)
         try:
             self._client.delete_object(Bucket=self.bucket, Key=key)

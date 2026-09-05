@@ -1,6 +1,6 @@
 import type { TaskDataSourceRecord, TaskRecord } from '../types/tasks';
 import { createEmptyTask } from '../pages/emptyTask';
-import { workspaceFetch } from './workspaceIdentity';
+import { isDemoFlowEnabled, workspaceFetch } from './workspaceIdentity';
 
 const DEMO_CSV = `月份,区域,渠道,订单数,销售额,毛利率,投放费用,转化率
 2025-01,华东,线上商城,1260,428000,0.34,52000,0.031
@@ -38,7 +38,7 @@ export const DEMO_STAGES: Array<{ id: DemoStageId; label: string; percent: numbe
   { id: 'prepare', label: '准备示例数据', percent: 15 },
   { id: 'parse', label: '解析分析意图', percent: 40 },
   { id: 'execute', label: '启动多 Agent 执行', percent: 70 },
-  { id: 'deliver', label: '进入报告交付', percent: 92 },
+  { id: 'deliver', label: '进入查看结果', percent: 92 },
   { id: 'done', label: '演示完成', percent: 100 },
 ];
 
@@ -177,6 +177,9 @@ export async function startDemoAnalysisFlow(options: {
   onProgress?: (progress: DemoProgress) => void;
 }): Promise<TaskRecord> {
   const { apiBaseUrl, currentTask, onProgress } = options;
+  if (!isDemoFlowEnabled()) {
+    throw new Error('示例演示仅在开发环境可用，生产环境已关闭。');
+  }
   const seed = buildDemoTaskSeed();
   onProgress?.(progressOf('prepare', '正在生成并接入示例数据…'));
 
@@ -247,6 +250,9 @@ export async function runFullDemoFlow(options: {
   onProgress?: (progress: DemoProgress) => void;
   onTask?: (task: TaskRecord) => void;
 }): Promise<{ task: TaskRecord; intent: DemoIntent; reachedDelivery: boolean }> {
+  if (!isDemoFlowEnabled()) {
+    throw new Error('示例演示仅在开发环境可用，生产环境已关闭。');
+  }
   const {
     apiBaseUrl,
     currentTask,
@@ -309,7 +315,7 @@ export async function runFullDemoFlow(options: {
   }
 
   if (!autoStart) {
-    onProgress?.(progressOf('execute', '需求已解析，可手动启动任务'));
+    onProgress?.(progressOf('execute', '需求已解析，可手动开始分析'));
     return { task, intent, reachedDelivery: false };
   }
 
@@ -377,7 +383,7 @@ export async function runFullDemoFlow(options: {
         context: {
           ...task.snapshot.context,
           activeAgent: '审核校验 Agent',
-          latestLog: '示例演示执行完成，可进入报告交付。',
+          latestLog: '示例演示执行完成，可进入查看结果。',
           outputSummary: '已生成示例分析结论，可导出报告。',
         },
       },
@@ -400,7 +406,7 @@ export async function runFullDemoFlow(options: {
     ['completed', 'needs_review'].includes(phase) || status === 'succeeded' || Boolean(task.artifacts?.length);
 
   if (reachedDelivery) {
-    onProgress?.(progressOf('deliver', '分析完成，进入报告交付…'));
+    onProgress?.(progressOf('deliver', '分析完成，进入查看结果…'));
     await sleep(200);
     onProgress?.(progressOf('done', '示例演示完成'));
   } else if (phase === 'failed' || status === 'failed') {

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import EmptyState from '../components/feedback/EmptyState';
+import FlowAlert from '../components/feedback/FlowAlert';
+import { usePageFeedback } from '../components/feedback/usePageFeedback';
 import {
-  clearAuthSession,
   DEFAULT_WORKSPACE_TENANT_ID,
   DEFAULT_WORKSPACE_USER_ID,
   getAuthSession,
   getWorkspaceIdentity,
+  logoutSession,
   resetWorkspaceIdentity,
   saveWorkspaceIdentity,
   workspaceFetch,
@@ -53,20 +56,24 @@ type OrgInvite = {
 
 function SettingsPage({ onLoggedOut }: SettingsPageProps) {
   const navigate = useNavigate();
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const session = getAuthSession();
   const current = getWorkspaceIdentity();
   const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL ?? '';
   const [tenantId, setTenantId] = useState(current.tenantId);
   const [userId, setUserId] = useState(current.userId);
-  const [status, setStatus] = useState('');
   const [users, setUsers] = useState<ManagedUser[]>([]);
-  const [usersStatus, setUsersStatus] = useState('');
+  const identityFeedback = usePageFeedback();
+  const usersFeedback = usePageFeedback();
+  const orgFeedback = usePageFeedback();
+  const { status, statusTone, setStatus, notify: notifyIdentity } = identityFeedback;
+  const { status: usersStatus, statusTone: usersStatusTone, setStatus: setUsersStatus, notify: notifyUsers } = usersFeedback;
+  const { status: orgStatus, statusTone: orgStatusTone, setStatus: setOrgStatus, notify: notifyOrg } = orgFeedback;
 
   const [orgs, setOrgs] = useState<OrgItem[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState('');
   const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
   const [orgInvites, setOrgInvites] = useState<OrgInvite[]>([]);
-  const [orgStatus, setOrgStatus] = useState('');
   const [orgName, setOrgName] = useState('分析协作组');
   const [orgSlug, setOrgSlug] = useState('analytics-team');
   const [inviteUsername, setInviteUsername] = useState('');
@@ -89,7 +96,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
         return response.json();
       })
       .then((payload: { items: ManagedUser[] }) => setUsers(payload.items || []))
-      .catch(() => setUsersStatus('无法加载用户列表。'));
+      .catch(() => notifyUsers('无法加载用户列表', { tone: 'danger' }));
   };
 
   const loadOrgs = async () => {
@@ -108,7 +115,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
         setSelectedOrgId(items[0]?.id || '');
       }
     } catch {
-      setOrgStatus('无法加载组织列表。');
+      notifyOrg('无法加载组织列表', { tone: 'danger' });
     }
   };
 
@@ -125,7 +132,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
       setOrgMembers(payload.members || []);
       setOrgInvites(payload.invites || []);
     } catch {
-      setOrgStatus('无法加载组织详情。');
+      notifyOrg('无法加载组织详情', { tone: 'danger' });
     }
   };
 
@@ -140,34 +147,50 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
 
   const saveIdentity = () => {
     if (identityLocked) {
-      setStatus('已登录状态下作用域由 JWT 决定，不能手动覆盖。');
+      notifyIdentity('无法修改作用域', { description: '已登录状态下由 JWT 决定，不能手动覆盖。', tone: 'warn' });
       return;
     }
     const next = saveWorkspaceIdentity({ tenantId, userId });
     setTenantId(next.tenantId);
     setUserId(next.userId);
-    setStatus(`已保存工作空间：${next.tenantId} / ${next.userId}`);
+    notifyIdentity('工作空间已保存', { description: `${next.tenantId} / ${next.userId}`, tone: 'success' });
   };
 
   const resetIdentity = () => {
     if (identityLocked) {
-      setStatus('已登录状态下作用域由 JWT 决定，不能手动覆盖。');
+      notifyIdentity('无法修改作用域', { description: '已登录状态下由 JWT 决定，不能手动覆盖。', tone: 'warn' });
+      return;
+    }
+    const confirmed = window.confirm('确认恢复默认本地工作空间身份吗？');
+    if (!confirmed) {
+      notifyIdentity('已取消恢复默认值', { tone: 'info' });
       return;
     }
     const next = resetWorkspaceIdentity();
     setTenantId(next.tenantId);
     setUserId(next.userId);
-    setStatus('已恢复默认本地工作空间。');
+    notifyIdentity('已恢复默认本地工作空间', { tone: 'success' });
   };
 
   const logout = () => {
-    clearAuthSession();
-    onLoggedOut?.();
-    navigate('/login', { replace: true });
+    const confirmed = window.confirm('确认退出当前账号吗？未保存的本地草稿不会自动上传。');
+    if (!confirmed) return;
+    const apiBaseUrl = import.meta.env.VITE_WORKSPACE_API_BASE_URL ?? '';
+    void logoutSession(apiBaseUrl).finally(() => {
+      onLoggedOut?.();
+      notifyIdentity('已退出登录', { tone: 'info', keepStatus: false });
+      navigate('/login', { replace: true });
+    });
   };
 
   const changeRole = async (user: ManagedUser, role: string) => {
-    setUsersStatus('正在更新角色...');
+    if (role === user.role) return;
+    const confirmed = window.confirm(`确认将 ${user.username} 的角色调整为 ${roleLabel(role)} 吗？`);
+    if (!confirmed) {
+      notifyUsers('已取消角色变更', { tone: 'info' });
+      return;
+    }
+    setUsersStatus('正在更新角色...', 'info');
     const response = await workspaceFetch(`${apiBaseUrl}/api/auth/users/${encodeURIComponent(user.id)}/role`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -175,7 +198,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setUsersStatus(payload?.error?.message || '角色更新失败');
+      notifyUsers('角色更新失败', { description: payload?.error?.message, tone: 'danger' });
       return;
     }
     const payload = await response.json();
@@ -184,11 +207,11 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
         item.id === user.id ? { ...item, role: payload.user.role, permissions: payload.user.permissions } : item,
       ),
     );
-    setUsersStatus(`已将 ${user.username} 调整为 ${roleLabel(role)}`);
+    notifyUsers('角色已更新', { description: `${user.username} → ${roleLabel(role)}`, tone: 'success' });
   };
 
   const createOrg = async () => {
-    setOrgStatus('正在创建组织...');
+    setOrgStatus('正在创建组织...', 'info');
     const response = await workspaceFetch(`${apiBaseUrl}/api/orgs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -196,18 +219,18 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setOrgStatus(payload?.error?.message || '创建组织失败');
+      notifyOrg('创建组织失败', { description: payload?.error?.message, tone: 'danger' });
       return;
     }
     const payload = await response.json();
-    setOrgStatus(`组织已创建：${payload.organization.name}`);
+    notifyOrg('组织已创建', { description: payload.organization.name, tone: 'success' });
     await loadOrgs();
     setSelectedOrgId(payload.organization.id);
   };
 
   const inviteMember = async () => {
     if (!selectedOrgId) return;
-    setOrgStatus('正在发送邀请...');
+    setOrgStatus('正在发送邀请...', 'info');
     const response = await workspaceFetch(`${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/invites`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -215,17 +238,17 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setOrgStatus(payload?.error?.message || '邀请失败');
+      notifyOrg('邀请失败', { description: payload?.error?.message, tone: 'danger' });
       return;
     }
     const payload = await response.json();
-    setOrgStatus(`已生成邀请：${payload.invite.username}，令牌 ${payload.invite.token}`);
+    notifyOrg('邀请已生成', { description: `${payload.invite.username} · ${payload.invite.token}`, tone: 'success' });
     setInviteUsername('');
     await loadOrgDetail(selectedOrgId);
   };
 
   const acceptInvite = async () => {
-    setOrgStatus('正在接受邀请...');
+    setOrgStatus('正在接受邀请...', 'info');
     const response = await workspaceFetch(`${apiBaseUrl}/api/orgs/invites/accept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -233,17 +256,17 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setOrgStatus(payload?.error?.message || '接受邀请失败');
+      notifyOrg('接受邀请失败', { description: payload?.error?.message, tone: 'danger' });
       return;
     }
-    setOrgStatus('已加入组织。');
+    notifyOrg('已加入组织', { tone: 'success' });
     setInviteTokenInput('');
     await loadOrgs();
   };
 
   const shareCurrentTemplate = async () => {
     if (!selectedOrgId) return;
-    setOrgStatus('正在共享当前任务为组织模板...');
+    setOrgStatus('正在共享当前任务为组织模板...', 'info');
     const response = await workspaceFetch(
       `${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/share/template`,
       {
@@ -254,16 +277,16 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     );
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setOrgStatus(payload?.error?.message || '共享失败');
+      notifyOrg('共享失败', { description: payload?.error?.message, tone: 'danger' });
       return;
     }
     const payload = await response.json();
-    setOrgStatus(`已共享组织模板：${payload.template?.name || payload.template?.id}`);
+    notifyOrg('模板已共享到组织', { description: payload.template?.name || payload.template?.id, tone: 'success' });
   };
 
   const shareResource = async (resourceType: 'task' | 'dataset' | 'template', resourceId?: string) => {
     if (!selectedOrgId) return;
-    setOrgStatus(`正在共享${resourceType}到组织...`);
+    setOrgStatus(`正在共享${resourceType}到组织...`, 'info');
     const response = await workspaceFetch(
       `${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/share/resource`,
       {
@@ -278,11 +301,11 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     );
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setOrgStatus(payload?.error?.message || payload?.detail || '资源共享失败');
+      notifyOrg('资源共享失败', { description: payload?.error?.message || payload?.detail, tone: 'danger' });
       return;
     }
     const payload = await response.json();
-    setOrgStatus(`已共享 ${resourceType}：${payload.share?.resourceId || ''}`);
+    notifyOrg('资源已共享到组织', { description: `${resourceType} ${payload.share?.resourceId || ''}`.trim(), tone: 'success' });
   };
 
   const shareCurrentTask = async () => {
@@ -297,17 +320,23 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
       const task = await response.json();
       const datasetId = task?.dataSource?.id;
       if (!datasetId) {
-        setOrgStatus('当前任务未绑定数据集，无法共享。');
+        notifyOrg('无法共享数据集', { description: '当前任务未绑定数据集。', tone: 'warn' });
         return;
       }
       await shareResource('dataset', String(datasetId));
     } catch {
-      setOrgStatus('读取当前任务失败，无法共享数据集。');
+      notifyOrg('无法共享数据集', { description: '读取当前任务失败。', tone: 'danger' });
     }
   };
 
   const changeOrgMemberRole = async (member: OrgMember, role: string) => {
     if (!selectedOrgId) return;
+    if (role === member.role) return;
+    const confirmed = window.confirm(`确认将成员 ${member.username} 调整为 ${role} 吗？`);
+    if (!confirmed) {
+      notifyOrg('已取消成员角色变更', { tone: 'info' });
+      return;
+    }
     const response = await workspaceFetch(
       `${apiBaseUrl}/api/orgs/${encodeURIComponent(selectedOrgId)}/members/${encodeURIComponent(member.userId)}`,
       {
@@ -318,55 +347,70 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
     );
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      setOrgStatus(payload?.error?.message || '成员角色更新失败');
+      notifyOrg('成员角色更新失败', { description: payload?.error?.message, tone: 'danger' });
       return;
     }
-    setOrgStatus(`已更新成员角色：${member.username} -> ${role}`);
+    notifyOrg('成员角色已更新', { description: `${member.username} → ${role}`, tone: 'success' });
     await loadOrgDetail(selectedOrgId);
   };
 
   return (
-    <div className="workspace-grid compact-page">
+    <div className="workspace-grid compact-page settings-page page-tint-settings">
       <section className="enterprise-page-hero">
-        <span className="enterprise-page-kicker">系统设置 / 工作空间身份</span>
         <div className="enterprise-page-title-row">
           <div>
-            <h3>工作空间与企业配置</h3>
-            <p>管理登录态、JWT 作用域、RBAC 角色、组织协作，以及本地兼容模式下的租户/用户标识。</p>
+            <h3>设置</h3>
+            <p>查看当前账号，需要换人使用时点「退出登录」。</p>
+          </div>
+          <div className="enterprise-page-actions">
+            {session ? (
+              <button className="action-button secondary-button settings-logout-btn" type="button" onClick={logout}>
+                退出登录
+              </button>
+            ) : (
+              <button className="action-button" type="button" onClick={() => navigate('/login')}>
+                去登录 / 注册
+              </button>
+            )}
           </div>
         </div>
       </section>
 
       <section className="enterprise-metric-strip">
-        <article className="enterprise-metric-card">
-          <span>默认租户</span>
-          <strong>{DEFAULT_WORKSPACE_TENANT_ID}</strong>
-          <small>本地单机模式默认值</small>
-        </article>
-        <article className="enterprise-metric-card">
-          <span>默认用户</span>
-          <strong>{DEFAULT_WORKSPACE_USER_ID}</strong>
-          <small>本地单机模式默认值</small>
-        </article>
-        <article className="enterprise-metric-card">
-          <span>当前生效</span>
-          <strong>{`${tenantId} / ${userId}`}</strong>
-          <small>{identityLocked ? '由 JWT 绑定' : '本地兼容模式'}</small>
-        </article>
-        <article className="enterprise-metric-card">
+        <article className={`enterprise-metric-card metric-tone-${session ? 'success' : 'warn'}`}>
           <span>登录状态</span>
+          <strong>{session ? '已登录' : '未登录'}</strong>
+          <small>{session ? '可以正常使用分析功能' : '部分功能可能受限'}</small>
+        </article>
+        <article className="enterprise-metric-card metric-tone-accent">
+          <span>当前账号</span>
+          <strong>{session ? (session.user.displayName || session.user.username) : '访客'}</strong>
+          <small>{session ? session.user.username : '登录后显示'}</small>
+        </article>
+        <article className="enterprise-metric-card metric-tone-teal">
+          <span>角色</span>
           <strong>{session ? roleLabel(session.user.role) : '本地模式'}</strong>
-          <small>{session ? session.user.role : '兼容本地默认身份'}</small>
+          <small>{session ? '决定可编辑范围' : '未登录兼容模式'}</small>
+        </article>
+        <article className="enterprise-metric-card metric-tone-sand">
+          <span>团队</span>
+          <strong>{session ? session.user.tenantId : DEFAULT_WORKSPACE_TENANT_ID}</strong>
+          <small>个人使用保持默认即可</small>
         </article>
       </section>
 
-      <section className="content-card workspace-section">
-        <div className="section-heading">
-          <span className="section-index">AU</span>
-          <div>
-            <h3>账号与 JWT</h3>
-            <p>登录后后端将使用 token 中的 tenantId / userId / role，不再信任可伪造请求头。</p>
+      <section className="content-card workspace-section settings-account-card">
+        <div className="settings-profile-band">
+          <div className="settings-profile-avatar" aria-hidden="true">
+            {(session?.user.displayName || session?.user.username || '访')[0]?.toUpperCase()}
           </div>
+          <div>
+            <h3>我的账号</h3>
+            <p>这是你当前登录的身份信息。普通使用只需关心这里。</p>
+          </div>
+        </div>
+        <div className="section-heading settings-account-heading-spacer">
+          <div />
         </div>
         {session ? (
           <div className="form-grid">
@@ -379,7 +423,7 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
               <input className="text-input" value={session.user.displayName} readOnly />
             </label>
             <label className="field-label">
-              <span>租户</span>
+              <span>团队标识</span>
               <input className="text-input" value={session.user.tenantId} readOnly />
             </label>
             <label className="field-label">
@@ -388,12 +432,18 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
             </label>
           </div>
         ) : (
-          <p className="status-note">当前未登录。可前往登录页注册本地账号。</p>
+          <EmptyState
+            icon="AU"
+            title="当前未登录"
+            description="登录后可保存分析记录，并按账号隔离数据。"
+            primaryLabel="去登录 / 注册"
+            onPrimary={() => navigate('/login')}
+          />
         )}
         <div className="actions-row">
           {session ? (
-            <button className="action-button secondary-button" type="button" onClick={logout}>
-              退出登录
+            <button className="action-button secondary-button settings-logout-btn" type="button" onClick={logout}>
+              退出当前账号
             </button>
           ) : (
             <button className="action-button" type="button" onClick={() => navigate('/login')}>
@@ -403,17 +453,36 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
         </div>
       </section>
 
+      <section className="content-card workspace-section settings-advanced-card">
+        <div className="section-heading">
+          <div>
+            <h3>高级设置</h3>
+            <p>组织协作、权限、底层身份绑定等。日常分析不需要打开。</p>
+          </div>
+        </div>
+        <div className="actions-row">
+          <button
+            className="action-button secondary-button"
+            type="button"
+            onClick={() => setShowAdvancedSettings((v) => !v)}
+          >
+            {showAdvancedSettings ? '收起高级设置' : '展开高级设置'}
+          </button>
+        </div>
+      </section>
+
+      {showAdvancedSettings ? (
+      <>
       {session ? (
         <section className="content-card workspace-section">
           <div className="section-heading">
-            <span className="section-index">ORG</span>
-            <div>
+          <div>
               <h3>组织协作</h3>
               <p>创建组织、邀请成员、共享模板。组织成员可读取组织共享模板。</p>
             </div>
           </div>
 
-          <div className="form-grid">
+          <div className="form-grid" id="org-create-form">
             <label className="field-label">
               <span>组织名称</span>
               <input className="text-input" value={orgName} onChange={(event) => setOrgName(event.target.value)} />
@@ -520,10 +589,22 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
                   </div>
                 </div>
               ) : (
-                <p className="status-note">你是该组织成员，但不是管理员，无法邀请他人。</p>
+                <EmptyState
+              icon="LOCK"
+              title="当前无权管理组织成员"
+              description="只有组织 owner / admin 可以邀请成员、改角色和共享资源。"
+              tone="warn"
+            />
               )}
 
               <div className="history-list" style={{ marginTop: 12 }}>
+                {orgMembers.length === 0 ? (
+                  <EmptyState
+                    icon="MB"
+                    title="暂无组织成员"
+                    description="可通过邀请令牌添加成员，或等待对方接受邀请。"
+                  />
+                ) : null}
                 {orgMembers.map((member) => (
                   <article className="history-card" key={member.id}>
                     <div className="history-card-header">
@@ -564,17 +645,28 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
               ) : null}
             </>
           ) : (
-            <p className="status-note">还没有组织。可先创建一个组织，或接受邀请令牌加入。</p>
+            <EmptyState
+              icon="ORG"
+              title="还没有组织"
+              description="先创建一个组织，或使用邀请令牌加入后，才能共享模板与任务。"
+              primaryLabel="滚动到创建组织"
+              onPrimary={() => document.getElementById('org-create-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            />
           )}
-          {orgStatus ? <p className="status-note">{orgStatus}</p> : null}
+          {orgStatus ? (
+            <FlowAlert
+              tone={orgStatusTone}
+              title={orgStatus}
+              description={orgStatusTone === 'danger' ? '请检查权限、网络或输入后重试。' : undefined}
+            />
+          ) : null}
         </section>
       ) : null}
 
       {isAdmin ? (
         <section className="content-card workspace-section">
           <div className="section-heading">
-            <span className="section-index">RB</span>
-            <div>
+          <div>
               <h3>角色权限管理</h3>
               <p>admin 可管理同租户用户角色：viewer（只读）/ analyst（可写）/ admin（管理）。</p>
             </div>
@@ -603,15 +695,27 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
                 </div>
               </article>
             ))}
-            {users.length === 0 ? <p className="status-note">暂无用户，或当前账号无权查看。</p> : null}
+            {users.length === 0 ? (
+            <EmptyState
+              icon="RB"
+              title="暂无用户可管理"
+              description="当前租户还没有其他用户，或你的账号无权查看用户列表。"
+              tone="warn"
+            />
+          ) : null}
           </div>
-          {usersStatus ? <p className="status-note">{usersStatus}</p> : null}
+          {usersStatus ? (
+          <FlowAlert
+            tone={usersStatusTone}
+            title={usersStatus}
+            description={usersStatusTone === 'danger' ? '角色变更未生效，请确认你具备 admin 权限。' : undefined}
+          />
+        ) : null}
         </section>
       ) : null}
 
       <section className="content-card workspace-section">
         <div className="section-heading">
-          <span className="section-index">ST</span>
           <div>
             <h3>工作空间身份（兼容模式）</h3>
             <p>仅在未登录时生效。登录后由 JWT 强制绑定，防止伪造租户/用户。</p>
@@ -648,12 +752,17 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
           </button>
         </div>
         <p className="status-note">普通接口会自动附带请求头；下载链接会自动附带同名查询参数与 accessToken。</p>
-        {status ? <p className="status-note">{status}</p> : null}
+        {status ? (
+          <FlowAlert
+            tone={statusTone}
+            title={status}
+            description={statusTone === 'warn' ? '登录后作用域由 JWT 强制绑定。' : undefined}
+          />
+        ) : null}
       </section>
 
       <section className="content-card workspace-section">
         <div className="section-heading">
-          <span className="section-index">EG</span>
           <div>
             <h3>企业级基础能力</h3>
             <p>当前已落地的企业化基础设施状态。</p>
@@ -686,6 +795,8 @@ function SettingsPage({ onLoggedOut }: SettingsPageProps) {
           </li>
         </ul>
       </section>
+      </>
+      ) : null}
     </div>
   );
 }

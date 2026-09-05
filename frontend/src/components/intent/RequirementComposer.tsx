@@ -48,41 +48,41 @@ function RequirementComposer({
   return (
     <section className="content-card workspace-section" id="requirement-composer">
       <div className="section-heading">
-        <span className="section-index">02</span>
-        <div>
-          <h3>需求输入</h3>
-          <p>用自然语言描述分析目标，由系统自动整理为结构化意图。</p>
+          <div>
+          <h3>说明你想分析什么</h3>
+          <p>用一句话说清楚就行，不用写公式或专业术语。系统会自动整理成分析方案。</p>
         </div>
       </div>
       <label className="field-label" htmlFor="analysis-request">
-        分析需求
+        你的分析问题
       </label>
       <textarea
         id="analysis-request"
         className="text-input text-area"
         value={value}
+        placeholder="例如：比较各区域销售额，并找出异常月份"
         onChange={(event) => handleChange(event.target.value)}
         disabled={readOnly}
       />
       <div className="actions-row">
         <button className="action-button" type="button" onClick={handleParse} disabled={readOnly}>
-          解析意图
+          生成分析方案
         </button>
         <button className="action-button secondary-button" type="button" onClick={() => setShowExample((current) => !current)}>
-          解析示例
+          {showExample ? '收起示例' : '看看怎么写'}
         </button>
       </div>
-      {readOnly ? <p className="status-note">当前角色为只读，无法解析或修改需求。</p> : null}
+      {readOnly ? <p className="status-note">当前为只读，无法修改问题。</p> : null}
       {showExample ? (
         <div className="preview-card example-card">
-          <h4>自然语言到结构化意图示例</h4>
+          <h4>写法示例</h4>
           <div className="example-grid">
             <div>
-              <span className="context-label">输入描述</span>
+              <span className="context-label">你可以这样写</span>
               <p>分析 2025 年月度销售趋势，找出区域差异，并输出管理层报告。</p>
             </div>
             <div>
-              <span className="context-label">系统解析</span>
+              <span className="context-label">系统会帮你整理成</span>
               <p>目标：月度销售趋势分析</p>
               <p>指标：销售额、同比、环比</p>
               <p>维度：月份、区域</p>

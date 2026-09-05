@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import EmptyState from '../components/feedback/EmptyState';
+import PageSkeleton from '../components/feedback/PageSkeleton';
+import { usePageFeedback } from '../components/feedback/usePageFeedback';
 import { useWorkbenchShell } from '../context/WorkbenchShellContext';
 import type { TaskRecord } from '../types/tasks';
 import { workspaceFetch } from '../utils/workspaceIdentity';
@@ -26,7 +29,7 @@ function HistoryPage() {
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState('');
+  const { status, statusTone, setStatus, notify } = usePageFeedback();
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +47,7 @@ function HistoryPage() {
         if (!cancelled) {
           setRecentTasks([]);
           setSelectedTaskId('');
-          setStatus('无法读取历史任务，请确认后端服务已启动。');
+          notify('无法读取历史任务', { description: '请确认后端服务已启动。', tone: 'danger' });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -73,17 +76,17 @@ function HistoryPage() {
   const activateTask = async (taskId: string) => {
     const response = await workspaceFetch(`${apiBaseUrl}/api/history/tasks/${encodeURIComponent(taskId)}/activate`, { method: 'POST' });
     if (!response.ok) {
-      setStatus('回放到工作台失败。');
+      notify('回放到工作台失败', { tone: 'danger' });
       return;
     }
     setActiveTask(await response.json());
+    notify('已回放历史任务', { description: '正在进入工作台继续分析。', tone: 'success' });
     navigate('/workspace?step=execution');
   };
 
   return (
     <div className="workspace-grid enterprise-split history-layout">
       <section className="enterprise-page-hero">
-        <span className="enterprise-page-kicker">历史任务 / 可回放任务库</span>
         <div className="enterprise-page-title-row">
           <div>
             <h3>分析任务档案中心</h3>
@@ -121,7 +124,6 @@ function HistoryPage() {
 
       <section className="content-card workspace-section">
         <div className="section-heading">
-          <span className="section-index">H1</span>
           <div>
             <h3>任务列表</h3>
             <p>按名称、摘要、需求和状态快速搜索历史任务。</p>
@@ -131,8 +133,8 @@ function HistoryPage() {
           <span>搜索历史任务</span>
           <input id="history-search" type="search" placeholder="输入任务名、摘要、需求或状态" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
         </label>
-        {loading ? <p className="status-note">正在加载历史任务…</p> : null}
-        {status ? <p className="status-note">{status}</p> : null}
+        {loading ? <PageSkeleton title="历史任务加载中" description="正在读取可回放任务列表…" cards={3} rows={4} compact /> : null}
+        {status ? <p className={`status-note status-note-${statusTone}`}>{status}</p> : null}
         <div className="history-list">
           {filteredTasks.map((task) => (
             <article className={`history-card${selectedTask?.id === task.id ? ' active-tab-card' : ''}`} key={task.id}>
@@ -147,13 +149,26 @@ function HistoryPage() {
               </div>
             </article>
           ))}
-          {!loading && filteredTasks.length === 0 ? <p className="status-note">暂无历史任务。</p> : null}
+          {!loading && filteredTasks.length === 0 ? (
+            <EmptyState
+              icon="HT"
+              title={keyword ? '没有匹配的历史任务' : '还没有历史任务'}
+              description={
+                keyword
+                  ? '试试更换关键词，或清空搜索查看全部任务。'
+                  : '完成一次分析后，任务快照会出现在这里，可随时回放。'
+              }
+              primaryLabel="开始新任务"
+              onPrimary={() => navigate('/workspace?step=input')}
+              secondaryLabel="打开数据源"
+              onSecondary={() => navigate('/data-sources')}
+            />
+          ) : null}
         </div>
       </section>
 
       <section className="content-card workspace-section">
         <div className="section-heading">
-          <span className="section-index">H2</span>
           <div>
             <h3>任务详情</h3>
             <p>展示当前选中任务的需求、节点状态和交付结果。</p>
@@ -179,12 +194,18 @@ function HistoryPage() {
               ))}
             </div>
             <div className="actions-row">
-              <button className="action-button" type="button" onClick={() => void activateTask(selectedTask.id)}>回放到执行编排</button>
-              <button className="action-button secondary-button" type="button" onClick={() => navigate('/workspace?step=output')}>查看报告交付</button>
+              <button className="action-button" type="button" onClick={() => void activateTask(selectedTask.id)}>回放到分析步骤</button>
+              <button className="action-button secondary-button" type="button" onClick={() => navigate('/workspace?step=output')}>查看查看结果</button>
             </div>
           </>
         ) : (
-          <p className="status-note">选择左侧任务以查看详情。</p>
+          <EmptyState
+              icon="i"
+              title="选择一个历史任务"
+              description="在左侧列表中点选任务，可查看需求、节点状态和导出结果。"
+              primaryLabel="开始新任务"
+              onPrimary={() => navigate('/workspace?step=input')}
+            />
         )}
       </section>
     </div>

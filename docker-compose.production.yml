@@ -23,11 +23,21 @@ services:
     image: redis:7-alpine
     container_name: workbench-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1000", "--loglevel", "warning"]
+    command:
+      [
+        "redis-server",
+        "--save",
+        "60",
+        "1000",
+        "--loglevel",
+        "warning",
+        "--requirepass",
+        "${WORKSPACE_REDIS_PASSWORD:?set WORKSPACE_REDIS_PASSWORD}",
+      ]
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${WORKSPACE_REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -71,15 +81,19 @@ services:
       WORKSPACE_ENABLE_AUDIT_EVENTS: "true"
       WORKSPACE_AUTH_REQUIRED: "true"
       WORKSPACE_AUTH_SECRET: ${WORKSPACE_AUTH_SECRET:?set WORKSPACE_AUTH_SECRET}
-      WORKSPACE_AUTH_TOKEN_MINUTES: ${WORKSPACE_AUTH_TOKEN_MINUTES:-720}
+      WORKSPACE_AUTH_TOKEN_MINUTES: ${WORKSPACE_AUTH_TOKEN_MINUTES:-30}
       WORKSPACE_ADMIN_API_KEY: ${WORKSPACE_ADMIN_API_KEY:?set WORKSPACE_ADMIN_API_KEY}
       WORKSPACE_CREDENTIALS_SECRET: ${WORKSPACE_CREDENTIALS_SECRET:?set WORKSPACE_CREDENTIALS_SECRET}
       WORKSPACE_CORS_ORIGINS: ${WORKSPACE_CORS_ORIGINS:?set WORKSPACE_CORS_ORIGINS}
       WORKSPACE_ENABLE_HSTS: "true"
       WORKSPACE_QUEUE_BACKEND: redis
-      WORKSPACE_REDIS_URL: redis://redis:6379/0
+      WORKSPACE_REDIS_URL: redis://:${WORKSPACE_REDIS_PASSWORD}@redis:6379/0
       WORKSPACE_RATE_LIMIT_BACKEND: redis
       WORKSPACE_RATE_LIMIT_PER_MINUTE: ${WORKSPACE_RATE_LIMIT_PER_MINUTE:-120}
+      WORKSPACE_ALLOW_OPEN_REGISTRATION: ${WORKSPACE_ALLOW_OPEN_REGISTRATION:-false}
+      WORKSPACE_ALLOW_SELF_TENANT: ${WORKSPACE_ALLOW_SELF_TENANT:-false}
+      WORKSPACE_METRICS_PUBLIC: ${WORKSPACE_METRICS_PUBLIC:-false}
+      WORKSPACE_PASSWORD_COMPLEXITY: ${WORKSPACE_PASSWORD_COMPLEXITY:-true}
       WORKSPACE_ARTIFACT_BACKEND: ${WORKSPACE_ARTIFACT_BACKEND:-s3}
       WORKSPACE_ARTIFACT_DIR: workspace-artifacts
       WORKSPACE_S3_BUCKET: ${WORKSPACE_S3_BUCKET:-workbench-artifacts}
@@ -123,7 +137,7 @@ services:
       WORKSPACE_LOG_LEVEL: ${WORKSPACE_LOG_LEVEL:-INFO}
       WORKSPACE_JSON_LOGS: "true"
       WORKSPACE_QUEUE_BACKEND: redis
-      WORKSPACE_REDIS_URL: redis://redis:6379/0
+      WORKSPACE_REDIS_URL: redis://:${WORKSPACE_REDIS_PASSWORD}@redis:6379/0
       WORKSPACE_ARTIFACT_BACKEND: ${WORKSPACE_ARTIFACT_BACKEND:-s3}
       WORKSPACE_ARTIFACT_DIR: workspace-artifacts
       WORKSPACE_S3_BUCKET: ${WORKSPACE_S3_BUCKET:-workbench-artifacts}

@@ -1,3 +1,5 @@
+import type { Dispatch, SetStateAction } from 'react';
+
 import type { TaskRecord } from './tasks';
 
 export type WorkbenchContext = {
@@ -10,9 +12,9 @@ export type WorkbenchContext = {
 
 export type WorkbenchShellContext = {
   context: WorkbenchContext;
-  setContext: (context: WorkbenchContext) => void;
+  setContext: Dispatch<SetStateAction<WorkbenchContext>>;
   activeTask: TaskRecord;
-  setActiveTask: (task: TaskRecord) => void;
+  setActiveTask: Dispatch<SetStateAction<TaskRecord>>;
 };
 
 export const defaultWorkbenchContext: WorkbenchContext = {

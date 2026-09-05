@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { createHttpWorkspaceSessionTransport } from '../api/httpWorkspaceSessionTransport';
-import ChartBoard from '../components/charts/ChartBoard';
+import ChartBoard from '../components/charts/LazyChartBoard';
 import DataSourceUploader from '../components/data/DataSourceUploader';
 import EditableDataGrid from '../components/data/EditableDataGrid';
 import ExportCenter from '../components/export/ExportCenter';

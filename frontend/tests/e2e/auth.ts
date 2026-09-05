@@ -34,17 +34,24 @@ export async function registerE2ESession(request: APIRequestContext, suffix = `$
 }
 
 export async function installAuthSession(page: Page, session: E2EAuthSession) {
+  // Cookie is preferred in production; tests still seed user profile for shell UI.
+  // Also set Authorization-compatible profile and inject access cookie via document for local e2e.
   await page.addInitScript((nextSession) => {
-    window.localStorage.setItem('workspace.accessToken', nextSession.accessToken);
     window.localStorage.setItem('workspace.authUser', JSON.stringify(nextSession.user));
     window.localStorage.setItem('workspace.tenantId', nextSession.user.tenantId);
     window.localStorage.setItem('workspace.userId', nextSession.user.id);
+    // Clear any legacy token storage.
+    window.localStorage.removeItem('workspace.accessToken');
+    window.localStorage.removeItem('workspace.refreshToken');
+    document.cookie = `workspace_access_token=${encodeURIComponent(nextSession.accessToken)}; path=/`;
+    document.cookie = `workspace_csrf_token=e2e-csrf; path=/`;
   }, session);
 }
 
 export function authHeaders(session: E2EAuthSession) {
   return {
     Authorization: `Bearer ${session.accessToken}`,
+    'x-csrf-token': 'e2e-csrf',
   };
 }
 

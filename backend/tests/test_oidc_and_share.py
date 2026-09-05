@@ -71,9 +71,10 @@ class OidcAndShareTest(unittest.TestCase):
     def test_oidc_callback_creates_user(self) -> None:
         login = self.client.get("/api/auth/oidc/login").json()
         state = login["state"]
-        with patch("backend_py.app.exchange_code_for_tokens", return_value={"access_token": "idp-token"}):
+        # Routes live in backend_py.routes.orgs after modular split; patch there, not app.py.
+        with patch("backend_py.routes.orgs.exchange_code_for_tokens", return_value={"access_token": "idp-token"}):
             with patch(
-                "backend_py.app.fetch_userinfo",
+                "backend_py.routes.orgs.fetch_userinfo",
                 return_value={
                     "sub": "oidc-sub-1",
                     "preferred_username": "sso-user",

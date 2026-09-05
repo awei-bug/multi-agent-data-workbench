@@ -19,11 +19,13 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt pytest
+          python -m pip install -r backend/requirements.txt pytest pip-audit
+      - name: 依赖漏洞扫描
+        run: python -m pip_audit -r backend/requirements.txt || true
       - name: 运行后端测试
         run: |
           $env:PYTHONPATH = "backend"
-          python -m pytest backend/tests/test_config.py backend/tests/test_migrations.py backend/tests/test_workspace_api.py backend/tests/test_workflow_service.py backend/tests/test_document_analysis_path.py backend/tests/test_auth.py backend/tests/test_rbac.py backend/tests/test_async_workflow.py backend/tests/test_relational_scope.py backend/tests/test_observability.py backend/tests/test_redis_queue.py backend/tests/test_production_security.py backend/tests/test_organizations.py backend/tests/test_oidc_and_share.py backend/tests/test_compliance.py backend/tests/test_error_tracking.py backend/tests/test_rate_limit.py backend/tests/test_connectors.py
+          python -m pytest backend/tests -q
         shell: pwsh
 
   frontend:
@@ -50,6 +52,25 @@ jobs:
       - name: 运行前端 E2E
         run: npm run test:e2e
 
+  security-scan:
+    name: 密钥与配置扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 基础密钥模式扫描
+        shell: bash
+        run: |
+          set -euo pipefail
+          if rg -n --hidden --glob '!.git/**' --glob '!node_modules/**' --glob '!.venv/**' \
+            -e 'AKIA[0-9A-Z]{16}' \
+            -e '-----BEGIN (RSA|OPENSSH|EC) PRIVATE KEY-----' \
+            -e 'api[_-]?key["\s:=]+[A-Za-z0-9_\-]{20,}' \
+            .; then
+            echo "Potential secrets detected" >&2
+            exit 1
+          fi
+          echo "No obvious secrets matched basic patterns."
+
   compose-validate:
     name: Compose 配置校验
     runs-on: ubuntu-latest
@@ -57,3 +78,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: 校验 docker compose
         run: docker compose config
+      - name: 校验 production compose 语法
+        run: |
+          export POSTGRES_PASSWORD=dummy
+          export WORKSPACE_AUTH_SECRET=dummy-auth-secret-24chars-min
+          export WORKSPACE_ADMIN_API_KEY=dummy-admin-key-16
+          export WORKSPACE_CREDENTIALS_SECRET=dummy-credentials-secret-24
+          export WORKSPACE_CORS_ORIGINS=https://example.com
+          export WORKSPACE_REDIS_PASSWORD=dummy-redis-password
+          docker compose -f docker-compose.production.yml config >/dev/null

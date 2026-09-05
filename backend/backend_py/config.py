@@ -29,7 +29,14 @@ class RuntimeSettings:
     run_migrations_on_start: bool
     auth_secret: str
     auth_token_minutes: int
+    auth_refresh_days: int
     auth_required: bool
+    allow_open_registration: bool
+    allow_self_tenant: bool
+    metrics_public: bool
+    password_complexity: bool
+    login_max_failures: int
+    login_lockout_seconds: int
     workflow_async: bool
     workflow_step_delay_ms: int
     json_logs: bool
@@ -128,8 +135,31 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         log_level=values.get("WORKSPACE_LOG_LEVEL", "INFO"),
         run_migrations_on_start=values.get("WORKSPACE_RUN_MIGRATIONS_ON_START", "true").lower() != "false",
         auth_secret=auth_secret,
-        auth_token_minutes=int(values.get("WORKSPACE_AUTH_TOKEN_MINUTES", "720")),
+        auth_token_minutes=int(values.get("WORKSPACE_AUTH_TOKEN_MINUTES", "30" if production_mode else "720")),
+        auth_refresh_days=int(values.get("WORKSPACE_AUTH_REFRESH_DAYS", "14")),
         auth_required=auth_required,
+        allow_open_registration=values.get(
+            "WORKSPACE_ALLOW_OPEN_REGISTRATION",
+            "false" if production_mode else "true",
+        ).lower()
+        == "true",
+        allow_self_tenant=values.get(
+            "WORKSPACE_ALLOW_SELF_TENANT",
+            "false" if production_mode else "true",
+        ).lower()
+        == "true",
+        metrics_public=values.get(
+            "WORKSPACE_METRICS_PUBLIC",
+            "false" if production_mode else "true",
+        ).lower()
+        == "true",
+        password_complexity=values.get(
+            "WORKSPACE_PASSWORD_COMPLEXITY",
+            "true" if production_mode else "false",
+        ).lower()
+        == "true",
+        login_max_failures=int(values.get("WORKSPACE_LOGIN_MAX_FAILURES", "8")),
+        login_lockout_seconds=int(values.get("WORKSPACE_LOGIN_LOCKOUT_SECONDS", "900")),
         workflow_async=values.get("WORKSPACE_WORKFLOW_ASYNC", "true").lower() != "false",
         workflow_step_delay_ms=int(values.get("WORKSPACE_WORKFLOW_STEP_DELAY_MS", "0")),
         json_logs=values.get("WORKSPACE_JSON_LOGS", "false").lower() == "true",

@@ -93,9 +93,12 @@ class ArtifactStoreTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             store = create_artifact_store(backend="local", artifact_dir=temp_dir)
             self.assertIsInstance(store, LocalArtifactStore)
-            saved = store.save("uploads", "a.txt", b"hello")
-            self.assertEqual(store.read(saved["storageKey"]), b"hello")
-            store.delete(saved["storageKey"])
+            saved = store.save("uploads", "a.txt", b"hello", tenant_id="tenant-a")
+            self.assertTrue(str(saved["storageKey"]).startswith("tenants/tenant-a/"))
+            self.assertEqual(store.read(saved["storageKey"], tenant_id="tenant-a"), b"hello")
+            with self.assertRaises(PermissionError):
+                store.read(saved["storageKey"], tenant_id="tenant-b")
+            store.delete(saved["storageKey"], tenant_id="tenant-a")
 
 
 class WorkflowStreamTest(unittest.TestCase):
@@ -110,13 +113,22 @@ class WorkflowStreamTest(unittest.TestCase):
                 workflow_async=True,
             )
             client = TestClient(app)
-            with client.stream("GET", "/api/workflow/jobs/stream") as response:
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("text/event-stream", response.headers.get("content-type", ""))
-                # Read a small amount then stop.
-                chunk = next(response.iter_text())
-                self.assertTrue(chunk.startswith("event:") or chunk.startswith("data:") or "workflow" in chunk or chunk == "")
-            client.close()
+            # Avoid hanging on long-lived SSE: only assert headers via ordinary request routing.
+            # Starlette TestClient stream can block on async generators; use a bounded read.
+            try:
+                with client.stream("GET", "/api/workflow/jobs/stream") as response:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn("text/event-stream", response.headers.get("content-type", ""))
+                    iterator = response.iter_text()
+                    chunk = next(iterator, "")
+                    self.assertTrue(
+                        chunk.startswith("event:")
+                        or chunk.startswith("data:")
+                        or "workflow" in chunk
+                        or chunk == ""
+                    )
+            finally:
+                client.close()
 
 
 if __name__ == "__main__":

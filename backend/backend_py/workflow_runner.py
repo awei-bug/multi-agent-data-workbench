@@ -31,6 +31,10 @@ class WorkflowJob:
     steps: int = 0
     cancel_requested: bool = False
     backend: str = "memory"
+    attempts: int = 0
+    max_attempts: int = 3
+    claimed_at: str | None = None
+    worker_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -50,6 +54,10 @@ class WorkflowJob:
             steps=int(payload.get("steps") or 0),
             cancel_requested=bool(payload.get("cancel_requested")),
             backend=str(payload.get("backend") or "memory"),
+            attempts=int(payload.get("attempts") or 0),
+            max_attempts=int(payload.get("max_attempts") or 3),
+            claimed_at=payload.get("claimed_at"),
+            worker_id=payload.get("worker_id"),
         )
 
 
@@ -261,7 +269,7 @@ class MemoryWorkflowRunner:
 
 
 class RedisWorkflowQueue:
-    """Redis-backed shared queue for multi-instance API + worker deployments."""
+    """Redis-backed shared queue with processing lease + dead-letter support."""
 
     backend_name = "redis"
 
@@ -270,18 +278,28 @@ class RedisWorkflowQueue:
         redis_url: str,
         *,
         queue_key: str = "workspace:workflow:queue",
+        processing_key: str = "workspace:workflow:processing",
+        dead_letter_key: str = "workspace:workflow:dead",
         job_key_prefix: str = "workspace:workflow:job:",
         scope_key_prefix: str = "workspace:workflow:scope:",
         job_ttl_seconds: int = 60 * 60 * 24,
         step_delay_seconds: float = 0.0,
+        visibility_timeout_seconds: int = 300,
+        max_attempts: int = 3,
         redis_client: Any | None = None,
+        worker_id: str | None = None,
     ) -> None:
         self.redis_url = redis_url
         self.queue_key = queue_key
+        self.processing_key = processing_key
+        self.dead_letter_key = dead_letter_key
         self.job_key_prefix = job_key_prefix
         self.scope_key_prefix = scope_key_prefix
         self.job_ttl_seconds = job_ttl_seconds
         self.step_delay_seconds = step_delay_seconds
+        self.visibility_timeout_seconds = max(30, visibility_timeout_seconds)
+        self.max_attempts = max(1, max_attempts)
+        self.worker_id = worker_id or f"worker-{uuid4().hex[:8]}"
         self._redis = redis_client or self._connect(redis_url)
 
     @staticmethod
@@ -313,6 +331,60 @@ class RedisWorkflowQueue:
             return WorkflowJob.from_dict(json.loads(raw))
         except (TypeError, ValueError, KeyError):
             return None
+
+    def _remove_from_processing(self, job_id: str) -> None:
+        try:
+            self._redis.lrem(self.processing_key, 0, job_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def requeue_stale(self) -> int:
+        """Requeue jobs stuck in processing beyond the visibility timeout."""
+        try:
+            processing = list(self._redis.lrange(self.processing_key, 0, -1) or [])
+        except Exception:  # noqa: BLE001
+            return 0
+        requeued = 0
+        now = datetime.now(timezone.utc)
+        for job_id in processing:
+            job = self._load_job(str(job_id))
+            if not job:
+                self._remove_from_processing(str(job_id))
+                continue
+            if job.status not in {"queued", "running"}:
+                self._remove_from_processing(str(job_id))
+                continue
+            claimed_raw = job.claimed_at or job.started_at
+            if not claimed_raw:
+                continue
+            try:
+                claimed_at = datetime.fromisoformat(str(claimed_raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            age = (now - claimed_at).total_seconds()
+            if age < self.visibility_timeout_seconds:
+                continue
+            job.attempts = int(job.attempts or 0) + 1
+            job.worker_id = None
+            job.claimed_at = None
+            if job.attempts >= job.max_attempts:
+                job.status = "failed"
+                job.last_error = job.last_error or "exceeded max attempts after worker lease timeout"
+                job.finished_at = now.isoformat()
+                self._save_job(job)
+                self._remove_from_processing(job.job_id)
+                try:
+                    self._redis.lpush(self.dead_letter_key, job.job_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                job.status = "queued"
+                job.last_error = "requeued after worker lease timeout"
+                self._save_job(job)
+                self._remove_from_processing(job.job_id)
+                self._redis.lpush(self.queue_key, job.job_id)
+                requeued += 1
+        return requeued
 
     def get_job(self, tenant_id: str, owner_id: str) -> WorkflowJob | None:
         job_id = self._redis.get(self._scope_key(tenant_id, owner_id))
@@ -354,28 +426,46 @@ class RedisWorkflowQueue:
             action=action,
             status="queued",
             backend=self.backend_name,
+            max_attempts=self.max_attempts,
         )
         self._save_job(job)
         self._redis.lpush(self.queue_key, job.job_id)
         return job
 
     def claim_next(self, *, timeout_seconds: int = 5) -> WorkflowJob | None:
-        item = self._redis.brpop(self.queue_key, timeout=max(1, timeout_seconds))
-        if not item:
+        self.requeue_stale()
+        # Prefer reliable handoff: move into processing list, then ACK on complete.
+        job_id = None
+        if hasattr(self._redis, "brpoplpush"):
+            job_id = self._redis.brpoplpush(self.queue_key, self.processing_key, timeout=max(1, timeout_seconds))
+        else:
+            item = self._redis.brpop(self.queue_key, timeout=max(1, timeout_seconds))
+            if item:
+                _, job_id = item
+                try:
+                    self._redis.lpush(self.processing_key, str(job_id))
+                except Exception:  # noqa: BLE001
+                    pass
+        if not job_id:
             return None
-        _, job_id = item
         job = self._load_job(str(job_id))
         if not job:
+            self._remove_from_processing(str(job_id))
             return None
         if job.cancel_requested:
             job.status = "cancelled"
             job.finished_at = datetime.now(timezone.utc).isoformat()
             self._save_job(job)
+            self._remove_from_processing(job.job_id)
             return None
         if job.status not in {"queued", "running"}:
+            self._remove_from_processing(job.job_id)
             return None
         job.status = "running"
+        job.attempts = int(job.attempts or 0) + 1
         job.started_at = job.started_at or datetime.now(timezone.utc).isoformat()
+        job.claimed_at = datetime.now(timezone.utc).isoformat()
+        job.worker_id = self.worker_id
         self._save_job(job)
         return job
 
@@ -383,6 +473,7 @@ class RedisWorkflowQueue:
         latest = self._load_job(job.job_id) or job
         latest.steps = int(latest.steps) + 1
         latest.status = "running"
+        latest.claimed_at = datetime.now(timezone.utc).isoformat()
         self._save_job(latest)
         return latest
 
@@ -392,10 +483,27 @@ class RedisWorkflowQueue:
 
     def complete(self, job: WorkflowJob, *, status: str, error: str | None = None) -> WorkflowJob:
         latest = self._load_job(job.job_id) or job
+        if status == "failed" and int(latest.attempts or 0) < int(latest.max_attempts or self.max_attempts):
+            latest.status = "queued"
+            latest.last_error = error
+            latest.claimed_at = None
+            latest.worker_id = None
+            self._save_job(latest)
+            self._remove_from_processing(latest.job_id)
+            self._redis.lpush(self.queue_key, latest.job_id)
+            return latest
+
         latest.status = status
         latest.last_error = error
         latest.finished_at = datetime.now(timezone.utc).isoformat()
+        latest.claimed_at = None
         self._save_job(latest)
+        self._remove_from_processing(latest.job_id)
+        if status == "failed":
+            try:
+                self._redis.lpush(self.dead_letter_key, latest.job_id)
+            except Exception:  # noqa: BLE001
+                pass
         return latest
 
     def job_public_view(self, job: WorkflowJob | None) -> dict | None:

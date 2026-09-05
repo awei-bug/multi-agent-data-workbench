@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import type { EChartsOption } from 'echarts';
@@ -6,7 +6,13 @@ import { init, use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 
 import type { TaskArtifactRecord, TaskDataSourceRecord } from '../../types/tasks';
-import { aggregateComparisonRows, getAnalysisRows, getNumericFields, parseNumericValue, type ComparisonPoint } from '../../utils/dataAnalysis';
+import {
+  aggregateComparisonRows,
+  getAnalysisRows,
+  getNumericFields,
+  parseNumericValue,
+  type ComparisonPoint,
+} from '../../utils/dataAnalysis';
 
 type ChartBoardProps = {
   dataSource?: TaskDataSourceRecord;
@@ -18,7 +24,24 @@ type ChartBoardProps = {
 type ChartType = 'bar' | 'pie' | 'line' | 'scatter' | 'radar';
 type DocumentKeyword = { name: string; value: number };
 
-use([BarChart, LineChart, PieChart, RadarChart, ScatterChart, CanvasRenderer, GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent]);
+let echartsRegistered = false;
+function ensureEcharts() {
+  if (echartsRegistered) return;
+  use([
+    BarChart,
+    LineChart,
+    PieChart,
+    RadarChart,
+    ScatterChart,
+    CanvasRenderer,
+    GridComponent,
+    LegendComponent,
+    RadarComponent,
+    TitleComponent,
+    TooltipComponent,
+  ]);
+  echartsRegistered = true;
+}
 
 function formatValue(value: number) {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value);
@@ -64,7 +87,12 @@ function buildTrendOption(title: string, metric: string, points: ComparisonPoint
   };
 }
 
-function buildScatterOption(rows: ReturnType<typeof getAnalysisRows>, dimension: string, xMetric: string, yMetric: string): EChartsOption {
+function buildScatterOption(
+  rows: ReturnType<typeof getAnalysisRows>,
+  dimension: string,
+  xMetric: string,
+  yMetric: string,
+): EChartsOption {
   const scatterRows = rows
     .map((row) => ({
       name: row[dimension] || '未命名',
@@ -88,26 +116,35 @@ function buildScatterOption(rows: ReturnType<typeof getAnalysisRows>, dimension:
   };
 }
 
-function buildRadarOption(rows: ReturnType<typeof getAnalysisRows>, dimension: string, metrics: string[], baseMetric: string): EChartsOption {
+function buildRadarOption(
+  rows: ReturnType<typeof getAnalysisRows>,
+  dimension: string,
+  metrics: string[],
+  baseMetric: string,
+): EChartsOption {
   const rankedRows = [...rows]
     .map((row) => ({ row, value: parseNumericValue(row[baseMetric]) }))
     .filter((item) => Number.isFinite(item.value))
     .sort((left, right) => right.value - left.value)
     .slice(0, 5);
-  const maxByMetric = metrics.map((metric) => Math.max(...rows.map((row) => parseNumericValue(row[metric])).filter(Number.isFinite), 0));
+  const maxByMetric = metrics.map((metric) =>
+    Math.max(...rows.map((row) => parseNumericValue(row[metric])).filter(Number.isFinite), 0),
+  );
 
   return {
     title: { text: '多指标能力对比', left: 12, top: 8, textStyle: { fontSize: 15 } },
     tooltip: {},
     legend: { bottom: 0 },
     radar: { radius: '62%', indicator: metrics.map((metric) => ({ name: metric, max: 100 })) },
-    series: [{
-      type: 'radar',
-      data: rankedRows.map(({ row }) => ({
-        name: row[dimension] || '未命名',
-        value: metrics.map((metric, index) => normalize(parseNumericValue(row[metric]), maxByMetric[index])),
-      })),
-    }],
+    series: [
+      {
+        type: 'radar',
+        data: rankedRows.map(({ row }) => ({
+          name: row[dimension] || '未命名',
+          value: metrics.map((metric, index) => normalize(parseNumericValue(row[metric]), maxByMetric[index])),
+        })),
+      },
+    ],
   };
 }
 
@@ -134,39 +171,52 @@ function buildDocumentEvidenceOption(points: DocumentKeyword[]): EChartsOption {
 }
 
 function ChartBoard({ dataSource, metricArtifact, chartArtifact, onTitleChange }: ChartBoardProps) {
+  ensureEcharts();
   const chartRef = useRef<HTMLDivElement | null>(null);
+  const chartInstanceRef = useRef<ReturnType<typeof init> | null>(null);
   const [title, setTitle] = useState('核心指标排名');
-  const rows = getAnalysisRows(dataSource);
+  const rows = useMemo(() => getAnalysisRows(dataSource), [dataSource]);
   const fields = dataSource?.columns?.map((column) => column.name) ?? [];
   const numericFields = dataSource ? getNumericFields(dataSource, rows) : [];
   const [dimension, setDimension] = useState('');
   const [metric, setMetric] = useState('');
   const [secondaryMetric, setSecondaryMetric] = useState('');
   const [selectedChart, setSelectedChart] = useState<ChartType | null>(null);
+
   const serverGroups = Array.isArray(metricArtifact?.content?.groups)
     ? (metricArtifact?.content?.groups as Array<Record<string, unknown>>)
     : Array.isArray(chartArtifact?.content?.series)
       ? (chartArtifact?.content?.series as Array<Record<string, unknown>>)
       : [];
-  const isDocumentMode = dataSource?.kind === 'document' || String(metricArtifact?.content?.analysisMode ?? chartArtifact?.content?.analysisMode ?? '') === 'document';
+  const isDocumentMode =
+    dataSource?.kind === 'document' ||
+    String(metricArtifact?.content?.analysisMode ?? chartArtifact?.content?.analysisMode ?? '') === 'document';
   const serverPoints: ComparisonPoint[] = serverGroups
     .map((item) => ({ name: String(item.name ?? '未命名'), value: Number(item.value ?? 0) }))
     .filter((item) => Number.isFinite(item.value));
 
   useEffect(() => {
-    const nextMetric = String(metricArtifact?.content?.metric ?? chartArtifact?.content?.metric ?? numericFields[0] ?? '');
-    const nextDimension = String(metricArtifact?.content?.dimension ?? chartArtifact?.content?.dimension ?? fields.find((field) => field !== nextMetric) ?? fields[0] ?? '');
+    const nextMetric = String(
+      metricArtifact?.content?.metric ?? chartArtifact?.content?.metric ?? numericFields[0] ?? '',
+    );
+    const nextDimension = String(
+      metricArtifact?.content?.dimension ??
+        chartArtifact?.content?.dimension ??
+        fields.find((field) => field !== nextMetric) ??
+        fields[0] ??
+        '',
+    );
     const nextSecondaryMetric = numericFields.find((field) => field !== nextMetric) ?? nextMetric;
     setMetric(nextMetric);
     setDimension(nextDimension);
     setSecondaryMetric(nextSecondaryMetric);
-    setSelectedChart(serverPoints.length > 0 ? 'bar' : isDocumentMode ? 'bar' : null);
+    setSelectedChart(serverPoints.length > 0 || isDocumentMode || numericFields.length > 0 ? 'bar' : null);
     if (chartArtifact?.content?.title) setTitle(String(chartArtifact.content.title));
   }, [dataSource?.fileName, metricArtifact, chartArtifact]);
 
   const localPoints = dimension && metric ? aggregateComparisonRows(rows, dimension, metric) : [];
   const points = serverPoints.length > 0 ? serverPoints : localPoints;
-  const rankedPoints = [...points].sort((left, right) => right.value - left.value);
+  const rankedPoints = useMemo(() => [...points].sort((left, right) => right.value - left.value), [points]);
   const radarMetrics = numericFields.slice(0, 5);
   const top = rankedPoints[0];
   const bottom = rankedPoints[rankedPoints.length - 1];
@@ -194,7 +244,14 @@ function ChartBoard({ dataSource, metricArtifact, chartArtifact, onTitleChange }
   useEffect(() => {
     if (!chartRef.current || points.length === 0 || !selectedChart) return;
 
-    const chart = init(chartRef.current);
+    const host = chartRef.current;
+    if (host.clientWidth < 8 || host.clientHeight < 8) {
+      host.style.width = '100%';
+      host.style.height = selectedChart === 'bar' ? '460px' : '360px';
+    }
+
+    const chart = chartInstanceRef.current ?? init(host);
+    chartInstanceRef.current = chart;
     const option =
       isDocumentMode && selectedChart === 'bar'
         ? buildDocumentKeywordOption(title || '文档主题词频', rankedPoints)
@@ -210,72 +267,117 @@ function ChartBoard({ dataSource, metricArtifact, chartArtifact, onTitleChange }
                   ? buildScatterOption(rows, dimension, metric, secondaryMetric)
                   : buildRadarOption(rows, dimension, radarMetrics, metric);
 
-    chart.setOption(option);
+    chart.setOption(option, true);
     const resize = () => chart.resize();
     window.addEventListener('resize', resize);
+    const raf = window.requestAnimationFrame(() => chart.resize());
     return () => {
+      window.cancelAnimationFrame(raf);
       window.removeEventListener('resize', resize);
-      chart.dispose();
     };
-  }, [dimension, metric, points, radarMetrics.join('|'), rankedPoints, rows, secondaryMetric, selectedChart, title]);
+  }, [
+    dimension,
+    metric,
+    points,
+    radarMetrics.join('|'),
+    rankedPoints,
+    rows,
+    secondaryMetric,
+    selectedChart,
+    title,
+    isDocumentMode,
+  ]);
 
-  if (!dataSource || (!isDocumentMode && (rows.length === 0 || numericFields.length === 0)) || (isDocumentMode && rankedPoints.length === 0)) {
+  useEffect(
+    () => () => {
+      chartInstanceRef.current?.dispose();
+      chartInstanceRef.current = null;
+    },
+    [],
+  );
+
+  if (
+    !dataSource ||
+    (!isDocumentMode && (rows.length === 0 || numericFields.length === 0)) ||
+    (isDocumentMode && rankedPoints.length === 0)
+  ) {
     return (
-      <section className="content-card workspace-section">
-        <div className="section-heading">
-          <span className="section-index">07</span>
-          <div>
-            <h3>数据图表中心</h3>
-            <p>{isDocumentMode ? '当前文档还没有提取出可分析主题。' : '上传包含分类列和数值列的数据后，这里会提供多种分析图表。'}</p>
-          </div>
-        </div>
-        <label className="field-label" htmlFor="chart-title">图表标题</label>
-        <input id="chart-title" className="text-input" value={title} onChange={(event) => handleTitleChange(event.target.value)} />
-        <p className="status-note">{isDocumentMode ? '请先执行文档分析流程。' : '当前数据源还没有可用于汇总的有效数值数据。'}</p>
-      </section>
+      <div className="chart-board-inline">
+        <p className="status-note">
+          {isDocumentMode ? '请先执行文档分析流程。' : '当前数据源还没有可用于汇总的有效数值数据。'}
+        </p>
+      </div>
     );
   }
 
   return (
-    <section className="content-card workspace-section">
-      <div className="section-heading">
-        <span className="section-index">07</span>
-        <div>
-          <h3>数据图表中心</h3>
-          <p>{serverPoints.length > 0 ? `优先使用服务端指标结果：${metric || '指标'} / ${dimension || '维度'}` : `基于 ${dataSource.fileName} 的 ${rows.length} 条记录进行本地聚合分析。`}</p>
-        </div>
-      </div>
-
+    <div className="chart-board-inline">
       <div className="chart-command-board">
         <div className="summary-grid">
           <label className="field-label">
             分类字段
             <select className="text-input" value={dimension} onChange={(event) => setDimension(event.target.value)}>
-              {fields.map((field) => <option key={field} value={field}>{field}</option>)}
+              {fields.map((field) => (
+                <option key={field} value={field}>
+                  {field}
+                </option>
+              ))}
             </select>
           </label>
           <label className="field-label">
             数值字段
             <select className="text-input" value={metric} onChange={(event) => setMetric(event.target.value)}>
-              {numericFields.map((field) => <option key={field} value={field}>{field}</option>)}
+              {numericFields.map((field) => (
+                <option key={field} value={field}>
+                  {field}
+                </option>
+              ))}
             </select>
           </label>
           <label className="field-label">
             对比字段
-            <select className="text-input" value={secondaryMetric} onChange={(event) => setSecondaryMetric(event.target.value)} disabled={numericFields.length < 2}>
-              {numericFields.map((field) => <option key={field} value={field}>{field}</option>)}
+            <select
+              className="text-input"
+              value={secondaryMetric}
+              onChange={(event) => setSecondaryMetric(event.target.value)}
+              disabled={numericFields.length < 2}
+            >
+              {numericFields.map((field) => (
+                <option key={field} value={field}>
+                  {field}
+                </option>
+              ))}
             </select>
           </label>
         </div>
-        <label className="field-label" htmlFor="chart-title">图表标题</label>
-        <input id="chart-title" className="text-input" value={title} onChange={(event) => handleTitleChange(event.target.value)} />
+        <label className="field-label" htmlFor="chart-title">
+          图表标题
+        </label>
+        <input
+          id="chart-title"
+          className="text-input"
+          value={title}
+          onChange={(event) => handleTitleChange(event.target.value)}
+        />
       </div>
 
       <div className="summary-grid summary-grid-strong chart-insight-grid">
-        <div className="summary-card"><span>领先项</span><strong>{top ? `${top.name} / ${formatValue(top.value)}` : '无'}</strong></div>
-        <div className="summary-card"><span>首尾差距</span><strong>{top && bottom ? formatValue(top.value - bottom.value) : '无'}</strong></div>
-        <div className="summary-card"><span>前三集中度</span><strong>{`${(topThreeShare * 100).toFixed(1)}%`}</strong></div>
-        <div className="summary-card"><span>可比较指标</span><strong>{numericFields.length}</strong></div>
+        <div className="summary-card">
+          <span>领先项</span>
+          <strong>{top ? `${top.name} / ${formatValue(top.value)}` : '无'}</strong>
+        </div>
+        <div className="summary-card">
+          <span>首尾差距</span>
+          <strong>{top && bottom ? formatValue(top.value - bottom.value) : '无'}</strong>
+        </div>
+        <div className="summary-card">
+          <span>前三集中度</span>
+          <strong>{`${(topThreeShare * 100).toFixed(1)}%`}</strong>
+        </div>
+        <div className="summary-card">
+          <span>可比较指标</span>
+          <strong>{numericFields.length}</strong>
+        </div>
       </div>
 
       <div className="chart-type-grid">
@@ -297,7 +399,11 @@ function ChartBoard({ dataSource, metricArtifact, chartArtifact, onTitleChange }
 
       {selectedChart ? (
         <div className="chart-preview chart-preview-strong">
-          <div ref={chartRef} className={`chart-canvas${selectedChart === 'bar' ? ' chart-canvas-large' : ''}`} aria-label="数据分析图表" />
+          <div
+            ref={chartRef}
+            className={`chart-canvas${selectedChart === 'bar' ? ' chart-canvas-large' : ''}`}
+            aria-label="数据分析图表"
+          />
           <div className="chart-preview-footer">
             <span>{`图表：${chartOptions.find((option) => option.type === selectedChart)?.label ?? ''}`}</span>
             <span>{`分类：${dimension}`}</span>
@@ -306,7 +412,7 @@ function ChartBoard({ dataSource, metricArtifact, chartArtifact, onTitleChange }
           </div>
         </div>
       ) : null}
-    </section>
+    </div>
   );
 }
 

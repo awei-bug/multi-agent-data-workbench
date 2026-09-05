@@ -53,7 +53,7 @@ describe('history page', () => {
     expect(await screen.findAllByRole('heading', { name: '渠道投放复盘', level: 4 })).not.toHaveLength(0);
     await user.click(screen.getByRole('button', { name: '查看详情' }));
     expect(screen.getByText('数据接入 Agent')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '回放到执行编排' }));
+    await user.click(screen.getByRole('button', { name: '回放到分析步骤' }));
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes('/api/history/tasks/history-1/activate') && init?.method === 'POST')).toBe(true);
   });
 

@@ -1,0 +1,43 @@
+groups:
+  - name: workbench-slo
+    rules:
+      - alert: WorkbenchHighErrorRate
+        expr: |
+          (
+            sum(rate(workspace_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(workspace_http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Workbench API 5xx ratio > 5% for 10m"
+          description: "Check backend logs, Sentry, and recent deploys."
+
+      - alert: WorkbenchWorkflowFailureSpike
+        expr: increase(workspace_workflow_jobs_total{status="failed"}[15m]) > 5
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Workflow failures spiked"
+          description: "More than 5 failed workflow jobs in 15 minutes."
+
+      - alert: WorkbenchQueueBacklog
+        expr: workspace_workflow_jobs_active > 20
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Workflow queue backlog high"
+          description: "Active/queued jobs remain elevated; scale workers or inspect Redis."
+
+      - alert: WorkbenchAuthFailureBurst
+        expr: increase(workspace_auth_failures_total[10m]) > 50
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Auth failure burst"
+          description: "Possible credential stuffing or misconfigured clients."

@@ -48,6 +48,7 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(register.status_code, 200)
         register_payload = register.json()
         self.assertIn("accessToken", register_payload)
+        self.assertIn("refreshToken", register_payload)
         self.assertEqual(register_payload["user"]["tenantId"], "tenant-a")
         self.assertEqual(register_payload["user"]["username"], "analyst_a")
 
@@ -57,11 +58,20 @@ class AuthApiTest(unittest.TestCase):
         )
         self.assertEqual(login.status_code, 200)
         token = login.json()["accessToken"]
+        refresh = login.json()["refreshToken"]
+        self.assertIn("workspace_access_token", login.cookies)
+        self.assertIn("workspace_refresh_token", login.cookies)
+        self.assertIn("workspace_csrf_token", login.cookies)
 
         me = self.client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(me.status_code, 200)
         self.assertTrue(me.json()["authenticated"])
         self.assertEqual(me.json()["user"]["id"], register_payload["user"]["id"])
+
+        # Cookie auth works without Authorization header.
+        cookie_me = self.client.get("/api/auth/me")
+        self.assertEqual(cookie_me.status_code, 200)
+        self.assertTrue(cookie_me.json()["authenticated"])
 
         active = self.client.get("/api/active-task", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(active.status_code, 200)
@@ -80,6 +90,63 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(forged.status_code, 200)
         self.assertEqual(forged.headers["x-workspace-tenant-id"], "tenant-a")
         self.assertEqual(forged.headers["x-workspace-user-id"], register_payload["user"]["id"])
+
+        # Query accessToken is no longer accepted.
+        # Use a fresh client without cookies to isolate query-token rejection.
+        bare = TestClient(self.app)
+        leaked = bare.get(f"/api/active-task?accessToken={token}")
+        self.assertEqual(leaked.status_code, 200)
+        self.assertEqual(leaked.headers["x-workspace-user-id"], "local-user")
+        bare.close()
+
+        # Cookie-authenticated write requires CSRF header.
+        csrf = login.cookies.get("workspace_csrf_token")
+        bad_csrf = self.client.patch(
+            "/api/active-task",
+            json={"summary": "no csrf"},
+        )
+        self.assertEqual(bad_csrf.status_code, 401)
+        self.assertEqual(bad_csrf.json()["error"]["code"], "csrf_failed")
+
+        ok_csrf = self.client.patch(
+            "/api/active-task",
+            headers={"x-csrf-token": csrf},
+            json={"summary": "with csrf"},
+        )
+        self.assertEqual(ok_csrf.status_code, 200)
+
+        refreshed = self.client.post("/api/auth/refresh", json={})
+        self.assertEqual(refreshed.status_code, 200)
+        new_token = refreshed.json()["accessToken"]
+        self.assertNotEqual(new_token, token)
+
+        logout = self.client.post(
+            "/api/auth/logout",
+            headers={"Authorization": f"Bearer {new_token}"},
+            json={},
+        )
+        self.assertEqual(logout.status_code, 200)
+        blocked = self.client.get("/api/active-task", headers={"Authorization": f"Bearer {new_token}"})
+        self.assertEqual(blocked.status_code, 401)
+
+    def test_open_registration_can_be_disabled(self) -> None:
+        app = create_app(
+            api_key="test-key",
+            base_url="https://apihub.agnes-ai.com/v1",
+            model="Agnes 2.0 Flash",
+            repository_path=str(self.db_path),
+            seed_demo_data=False,
+            auth_secret=self.auth_secret,
+            allow_open_registration=False,
+        )
+        client = TestClient(app)
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "blocked_user", "password": "password123"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "registration_disabled")
+        client.close()
 
     def test_auth_required_blocks_anonymous_api_access(self) -> None:
         app = create_app(

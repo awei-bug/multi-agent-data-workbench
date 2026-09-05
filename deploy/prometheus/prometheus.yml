@@ -1,0 +1,23 @@
+# Prometheus scrape + alert rules for workbench production.
+# Wire into your Prometheus container/config with:
+#   --config.file=/etc/prometheus/prometheus.yml
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: workbench-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8787"]
+    # If WORKSPACE_METRICS_PUBLIC=false, scrape via internal network + admin basic auth sidecar,
+    # or expose a dedicated metrics listener on a private interface.
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []

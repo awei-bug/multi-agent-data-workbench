@@ -67,7 +67,7 @@ describe('workspace intent parsing', () => {
             context: defaultWorkbenchContext,
             setContext: () => undefined,
             activeTask: task,
-            setActiveTask: (next) => Object.assign(task, next),
+            setActiveTask: (next) => Object.assign(task, typeof next === 'function' ? next(task) : next),
           }}
         >
           <WorkspacePage />
@@ -75,12 +75,12 @@ describe('workspace intent parsing', () => {
       </MemoryRouter>,
     );
 
-    await user.type(screen.getByLabelText('分析需求'), '分析销售趋势');
-    await user.click(screen.getByRole('button', { name: '解析意图' }));
+    await user.type(screen.getByLabelText('你的分析问题'), '分析销售趋势');
+    await user.click(screen.getByRole('button', { name: '生成分析方案' }));
 
     expect(fetchMock).toHaveBeenCalledWith('/api/intent/parse', expect.objectContaining({ method: 'POST' }));
     // After successful parse, wizard advances to execution step.
-    expect(await screen.findByText('运行监控')).toBeInTheDocument();
+    expect(await screen.findByText('开始分析')).toBeInTheDocument();
     expect(task.name).toBe('销售趋势复盘');
     expect(task.intent?.goal).toBe('销售趋势复盘');
     fetchMock.mockRestore();

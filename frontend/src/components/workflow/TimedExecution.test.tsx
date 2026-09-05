@@ -26,8 +26,9 @@ describe('server-backed workflow view', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getAllByText('审核校验 Agent').length).toBeGreaterThan(0);
-    expect(screen.getByText('运行监控')).toBeInTheDocument();
+    // Without data, stage gate keeps user on the problem step.
+    expect(screen.getAllByText(/说明问题/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/开始分析/).length).toBeGreaterThan(0);
     expect(screen.queryByText('加载示例数据')).not.toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -28,11 +28,16 @@ describe('workspace shell flow', () => {
   it('keeps the complete navigation active state in sync with clicks', async () => {
     const user = userEvent.setup();
     const { container } = render(<MemoryRouter initialEntries={['/workspace?step=input']}><App /></MemoryRouter>);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.sidebar-nav-ops .sidebar-link-ops')).toHaveLength(8);
+    });
     const links = container.querySelectorAll<HTMLAnchorElement>('.sidebar-nav-ops .sidebar-link-ops');
-    // 主流程2 + 交付资产3 + 管理3 = 8
-    expect(links).toHaveLength(8);
+    // 主流程 4 项 + 更多 4 项 = 8
     // 点击“数据源”
     await user.click(links[1]);
-    expect(links[1]).toHaveAttribute('aria-current', 'page');
+    await waitFor(() => {
+      const updatedLinks = container.querySelectorAll<HTMLAnchorElement>('.sidebar-nav-ops .sidebar-link-ops');
+      expect(updatedLinks[1]).toHaveAttribute('aria-current', 'page');
+    });
   });
 });

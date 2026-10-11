@@ -178,6 +178,8 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertEqual(payload["database"]["type"], "sqlite")
         self.assertTrue(payload["model"]["configured"])
         self.assertEqual(payload["model"]["timeoutSeconds"], 60.0)
+        self.assertEqual(payload["model"]["resilience"]["maxAttempts"], 2)
+        self.assertEqual(payload["model"]["resilience"]["circuitBreaker"]["state"], "closed")
         self.assertEqual(response.headers["x-workspace-tenant-id"], "local-tenant")
         self.assertEqual(response.headers["x-workspace-user-id"], "local-user")
 
@@ -191,6 +193,7 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertEqual(ready.json()["status"], "ok")
         self.assertEqual(ready.json()["checks"]["database"]["ok"], True)
         self.assertEqual(ready.json()["checks"]["model"]["configured"], True)
+        self.assertEqual(ready.json()["checks"]["model"]["resilience"]["circuitBreaker"]["state"], "closed")
 
     def test_responses_include_basic_security_headers(self) -> None:
         response = self.client.get("/api/health")

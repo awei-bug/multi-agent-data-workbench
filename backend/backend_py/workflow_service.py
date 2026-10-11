@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -107,7 +108,7 @@ def _context_for_node(base_context: dict, node: dict, latest_log: str, risks: li
 
 def create_execution_log_entry(kind: str, message: str) -> dict:
     return {
-        "at": "now",
+        "at": datetime.now(timezone.utc).isoformat(),
         "kind": kind,
         "message": message,
     }

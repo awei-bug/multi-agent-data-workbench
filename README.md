@@ -4,6 +4,10 @@
 
 当前项目定位不是“只有页面原型”，而是“可本地运行、可联调、可继续向企业级推进”的单用户工作台系统。
 
+## 效果演示
+
+[观看演示视频](demo/demo.mp4)
+
 ## 主要能力
 
 - 支持上传和解析 `CSV`、`Excel`、`JSON`、`TXT`、`Markdown`、`Word`、`PDF`
@@ -115,6 +119,13 @@ docker compose up --build
 - `WORKSPACE_DATABASE_URL`
 - `WORKSPACE_MODEL_BASE_URL`
 - `WORKSPACE_MODEL_NAME`
+- `WORKSPACE_MODEL_TIMEOUT_SECONDS`
+- `WORKSPACE_MODEL_MAX_ATTEMPTS`
+- `WORKSPACE_MODEL_TOTAL_TIMEOUT_SECONDS`
+- `WORKSPACE_MODEL_BACKOFF_BASE_SECONDS`
+- `WORKSPACE_MODEL_BACKOFF_MAX_SECONDS`
+- `WORKSPACE_MODEL_CIRCUIT_FAILURE_THRESHOLD`
+- `WORKSPACE_MODEL_CIRCUIT_RECOVERY_SECONDS`
 - `WORKSPACE_ADMIN_API_KEY`
 - `WORKSPACE_AUTH_SECRET`
 - `WORKSPACE_AUTH_REQUIRED`
@@ -123,12 +134,30 @@ docker compose up --build
 - `WORKSPACE_METRICS_ENABLED`
 - `WORKSPACE_QUEUE_BACKEND`
 - `WORKSPACE_REDIS_URL`
+- `WORKSPACE_QUEUE_VISIBILITY_TIMEOUT_SECONDS`
+- `WORKSPACE_QUEUE_MAX_ATTEMPTS`
 - `WORKSPACE_SENTRY_DSN`
 - `WORKSPACE_ALERT_WEBHOOK_URL`
 - `WORKSPACE_RATE_LIMIT_BACKEND`
 - `WORKSPACE_CREDENTIALS_SECRET`
 - `APIHUB_API_KEY`
 - `WORKSPACE_RUN_MIGRATIONS_ON_START`
+
+## 任务执行可靠性
+
+Redis 异步任务和模型调用采用以下保护策略：
+
+- worker 领取任务时才增加一次 `attempts`；lease 超时回收本身不再额外消耗一次重试机会。
+- running 任务由独立 heartbeat 续租，默认间隔为 visibility timeout 的三分之一，并限制在 1～30 秒；只有当前 `workerId` 匹配时才允许续租。
+- 任务查询会返回 `attempts`、`maxAttempts`、`claimedAt`、`workerId`，便于定位卡住、重试和 worker 漂移问题。
+- 模型请求会重试 408、425、429、5xx 和网络传输异常；429 的 `Retry-After` 与指数退避的 full jitter 取更长等待时间。
+- `WORKSPACE_MODEL_TIMEOUT_SECONDS` 控制单次请求，`WORKSPACE_MODEL_TOTAL_TIMEOUT_SECONDS` 控制包含重试等待在内的整次调用 deadline。
+- 连续可重试失败达到阈值后熔断器进入 open；恢复窗口结束后只允许一个 half-open 探测，成功后恢复 closed。健康检查的 `model.resilience` 会暴露当前配置和熔断状态。
+- execution log 的 `at` 使用带 UTC 时区的 ISO 8601 时间，不再写固定占位值。
+
+默认参数：模型最多 2 次请求、总 deadline 120 秒、退避基数 0.5 秒/上限 8 秒、连续 5 次失败熔断、30 秒后探测；Redis visibility timeout 300 秒、任务最多 3 次领取。
+
+更完整的分批加固计划见 `docs/任务执行可靠性加固清单.md`。跨进程 fencing、节点幂等、orphan 对账、DLQ 管理和 LangGraph checkpointer 仍按清单后续批次实施。
 
 ### 前端环境
 

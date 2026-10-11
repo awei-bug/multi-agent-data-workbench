@@ -19,6 +19,12 @@ class ConfigTest(unittest.TestCase):
                 "WORKSPACE_API_PORT": "9000",
                 "WORKSPACE_DATABASE_URL": "postgresql://postgres:123456@127.0.0.1:5432/workbench",
                 "WORKSPACE_MODEL_TIMEOUT_SECONDS": "12.5",
+                "WORKSPACE_MODEL_MAX_ATTEMPTS": "4",
+                "WORKSPACE_MODEL_TOTAL_TIMEOUT_SECONDS": "45",
+                "WORKSPACE_MODEL_BACKOFF_BASE_SECONDS": "0.25",
+                "WORKSPACE_MODEL_BACKOFF_MAX_SECONDS": "4",
+                "WORKSPACE_MODEL_CIRCUIT_FAILURE_THRESHOLD": "7",
+                "WORKSPACE_MODEL_CIRCUIT_RECOVERY_SECONDS": "20",
                 "WORKSPACE_ENABLE_AUDIT_EVENTS": "false",
                 "WORKSPACE_MAX_REQUEST_BODY_BYTES": "1024",
                 "WORKSPACE_RATE_LIMIT_PER_MINUTE": "30",
@@ -29,6 +35,8 @@ class ConfigTest(unittest.TestCase):
                 "WORKSPACE_JSON_LOGS": "false",
                 "WORKSPACE_METRICS_ENABLED": "true",
                 "WORKSPACE_QUEUE_BACKEND": "memory",
+                "WORKSPACE_QUEUE_VISIBILITY_TIMEOUT_SECONDS": "180",
+                "WORKSPACE_QUEUE_MAX_ATTEMPTS": "5",
             }
         )
 
@@ -40,6 +48,12 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.model_name, "Agnes 2.0 Flash")
         self.assertEqual(settings.database_url, "postgresql://postgres:123456@127.0.0.1:5432/workbench")
         self.assertEqual(settings.timeout_seconds, 12.5)
+        self.assertEqual(settings.model_max_attempts, 4)
+        self.assertEqual(settings.model_total_timeout_seconds, 45)
+        self.assertEqual(settings.model_backoff_base_seconds, 0.25)
+        self.assertEqual(settings.model_backoff_max_seconds, 4)
+        self.assertEqual(settings.model_circuit_failure_threshold, 7)
+        self.assertEqual(settings.model_circuit_recovery_seconds, 20)
         self.assertFalse(settings.enable_audit_events)
         self.assertEqual(settings.max_request_body_bytes, 1024)
         self.assertEqual(settings.rate_limit_per_minute, 30)
@@ -57,6 +71,8 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(settings.metrics_enabled)
         self.assertEqual(settings.queue_backend, "memory")
         self.assertIsNone(settings.redis_url)
+        self.assertEqual(settings.queue_visibility_timeout_seconds, 180)
+        self.assertEqual(settings.queue_max_attempts, 5)
         self.assertTrue(settings.error_tracking_enabled)
         self.assertIsNone(settings.sentry_dsn)
         self.assertEqual(settings.sentry_environment, "local")

@@ -1,9 +1,21 @@
 import unittest
+from datetime import datetime
 
-from backend_py.workflow_service import advance_workflow_with_model, apply_workflow_action, build_workflow_graph
+from backend_py.workflow_service import (
+    advance_workflow_with_model,
+    apply_workflow_action,
+    build_workflow_graph,
+    create_execution_log_entry,
+)
 
 
 class WorkflowServiceTest(unittest.TestCase):
+    def test_execution_log_uses_parseable_utc_timestamp(self) -> None:
+        entry = create_execution_log_entry("action", "started")
+        parsed = datetime.fromisoformat(entry["at"])
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertEqual(parsed.utcoffset().total_seconds(), 0)
+
     def test_builds_langgraph_workflow(self) -> None:
         graph = build_workflow_graph()
 

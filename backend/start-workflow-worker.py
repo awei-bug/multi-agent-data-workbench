@@ -39,6 +39,8 @@ def main() -> None:
         backend="redis",
         redis_url=settings.redis_url,
         step_delay_seconds=settings.workflow_step_delay_ms / 1000.0,
+        visibility_timeout_seconds=settings.queue_visibility_timeout_seconds,
+        max_attempts=settings.queue_max_attempts,
     )
     if not isinstance(queue, RedisWorkflowQueue):
         raise SystemExit("failed to create redis workflow queue")
@@ -55,6 +57,12 @@ def main() -> None:
         base_url=settings.model_base_url,
         model=settings.model_name,
         timeout_seconds=settings.timeout_seconds,
+        max_attempts=settings.model_max_attempts,
+        total_timeout_seconds=settings.model_total_timeout_seconds,
+        backoff_base_seconds=settings.model_backoff_base_seconds,
+        backoff_max_seconds=settings.model_backoff_max_seconds,
+        circuit_failure_threshold=settings.model_circuit_failure_threshold,
+        circuit_recovery_seconds=settings.model_circuit_recovery_seconds,
     )
     metrics = get_metrics()
     stop = False

@@ -143,6 +143,12 @@ def create_app(
     admin_api_key: str = "",
     seed_demo_data: bool = True,
     model_timeout_seconds: float = 60.0,
+    model_max_attempts: int = 2,
+    model_total_timeout_seconds: float = 120.0,
+    model_backoff_base_seconds: float = 0.5,
+    model_backoff_max_seconds: float = 8.0,
+    model_circuit_failure_threshold: int = 5,
+    model_circuit_recovery_seconds: float = 30.0,
     enable_audit_events: bool = True,
     cors_origins: list[str] | None = None,
     artifact_dir: str = "workspace-artifacts",
@@ -165,6 +171,8 @@ def create_app(
     metrics_enabled: bool = True,
     queue_backend: str = "memory",
     redis_url: str | None = None,
+    queue_visibility_timeout_seconds: int = 300,
+    queue_max_attempts: int = 3,
     workflow_queue=None,
     error_tracking_enabled: bool = True,
     sentry_dsn: str | None = None,
@@ -230,6 +238,8 @@ def create_app(
         redis_url=redis_url,
         step_delay_seconds=max(0.0, workflow_step_delay_ms / 1000.0),
         max_workers=2,
+        visibility_timeout_seconds=queue_visibility_timeout_seconds,
+        max_attempts=queue_max_attempts,
     )
     app.state.workflow_runner = workflow_runner
     metrics = get_metrics()
@@ -748,6 +758,12 @@ def create_app(
         base_url=base_url,
         model=model,
         timeout_seconds=model_timeout_seconds,
+        max_attempts=model_max_attempts,
+        total_timeout_seconds=model_total_timeout_seconds,
+        backoff_base_seconds=model_backoff_base_seconds,
+        backoff_max_seconds=model_backoff_max_seconds,
+        circuit_failure_threshold=model_circuit_failure_threshold,
+        circuit_recovery_seconds=model_circuit_recovery_seconds,
     )
     store = create_artifact_store(
         backend=artifact_backend,

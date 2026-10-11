@@ -18,6 +18,12 @@ class RuntimeSettings:
     model_name: str
     database_url: str | None
     timeout_seconds: float
+    model_max_attempts: int
+    model_total_timeout_seconds: float
+    model_backoff_base_seconds: float
+    model_backoff_max_seconds: float
+    model_circuit_failure_threshold: int
+    model_circuit_recovery_seconds: float
     enable_audit_events: bool
     max_request_body_bytes: int
     rate_limit_per_minute: int
@@ -43,6 +49,8 @@ class RuntimeSettings:
     metrics_enabled: bool
     queue_backend: str
     redis_url: str | None
+    queue_visibility_timeout_seconds: int
+    queue_max_attempts: int
     sentry_dsn: str | None
     sentry_environment: str
     sentry_traces_sample_rate: float
@@ -125,6 +133,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         model_name=values.get("WORKSPACE_MODEL_NAME", "Agnes 2.0 Flash"),
         database_url=values.get("WORKSPACE_DATABASE_URL"),
         timeout_seconds=float(values.get("WORKSPACE_MODEL_TIMEOUT_SECONDS", "60")),
+        model_max_attempts=int(values.get("WORKSPACE_MODEL_MAX_ATTEMPTS", "2")),
+        model_total_timeout_seconds=float(values.get("WORKSPACE_MODEL_TOTAL_TIMEOUT_SECONDS", "120")),
+        model_backoff_base_seconds=float(values.get("WORKSPACE_MODEL_BACKOFF_BASE_SECONDS", "0.5")),
+        model_backoff_max_seconds=float(values.get("WORKSPACE_MODEL_BACKOFF_MAX_SECONDS", "8")),
+        model_circuit_failure_threshold=int(values.get("WORKSPACE_MODEL_CIRCUIT_FAILURE_THRESHOLD", "5")),
+        model_circuit_recovery_seconds=float(values.get("WORKSPACE_MODEL_CIRCUIT_RECOVERY_SECONDS", "30")),
         enable_audit_events=values.get("WORKSPACE_ENABLE_AUDIT_EVENTS", "true").lower() != "false",
         max_request_body_bytes=int(values.get("WORKSPACE_MAX_REQUEST_BODY_BYTES", "10000000")),
         rate_limit_per_minute=int(values.get("WORKSPACE_RATE_LIMIT_PER_MINUTE", "120")),
@@ -166,6 +180,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> RuntimeSettings:
         metrics_enabled=values.get("WORKSPACE_METRICS_ENABLED", "true").lower() != "false",
         queue_backend=queue_backend,
         redis_url=values.get("WORKSPACE_REDIS_URL") or None,
+        queue_visibility_timeout_seconds=int(values.get("WORKSPACE_QUEUE_VISIBILITY_TIMEOUT_SECONDS", "300")),
+        queue_max_attempts=int(values.get("WORKSPACE_QUEUE_MAX_ATTEMPTS", "3")),
         sentry_dsn=values.get("WORKSPACE_SENTRY_DSN") or None,
         sentry_environment=values.get("WORKSPACE_SENTRY_ENVIRONMENT", "local"),
         sentry_traces_sample_rate=float(values.get("WORKSPACE_SENTRY_TRACES_SAMPLE_RATE", "0")),

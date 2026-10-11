@@ -75,6 +75,10 @@ def job_public_view(job: WorkflowJob | None) -> dict | None:
         "steps": job.steps,
         "cancelRequested": job.cancel_requested,
         "backend": job.backend,
+        "attempts": job.attempts,
+        "maxAttempts": job.max_attempts,
+        "claimedAt": job.claimed_at,
+        "workerId": job.worker_id,
     }
 
 
@@ -364,7 +368,6 @@ class RedisWorkflowQueue:
             age = (now - claimed_at).total_seconds()
             if age < self.visibility_timeout_seconds:
                 continue
-            job.attempts = int(job.attempts or 0) + 1
             job.worker_id = None
             job.claimed_at = None
             if job.attempts >= job.max_attempts:
@@ -469,6 +472,20 @@ class RedisWorkflowQueue:
         self._save_job(job)
         return job
 
+    @property
+    def lease_heartbeat_interval_seconds(self) -> float:
+        return max(1.0, min(30.0, self.visibility_timeout_seconds / 3.0))
+
+    def renew_lease(self, job_id: str, worker_id: str | None = None) -> bool:
+        """Refresh a running job lease only when it is still owned by this worker."""
+        latest = self._load_job(job_id)
+        expected_worker_id = worker_id or self.worker_id
+        if not latest or latest.status != "running" or latest.worker_id != expected_worker_id:
+            return False
+        latest.claimed_at = datetime.now(timezone.utc).isoformat()
+        self._save_job(latest)
+        return True
+
     def mark_step(self, job: WorkflowJob) -> WorkflowJob:
         latest = self._load_job(job.job_id) or job
         latest.steps = int(latest.steps) + 1
@@ -523,6 +540,8 @@ def create_workflow_queue(
     redis_url: str | None = None,
     step_delay_seconds: float = 0.0,
     max_workers: int = 2,
+    visibility_timeout_seconds: int = 300,
+    max_attempts: int = 3,
     redis_client: Any | None = None,
 ) -> WorkflowQueue:
     normalized = (backend or "memory").strip().lower()
@@ -532,6 +551,8 @@ def create_workflow_queue(
         return RedisWorkflowQueue(
             redis_url or "redis://127.0.0.1:6379/0",
             step_delay_seconds=step_delay_seconds,
+            visibility_timeout_seconds=visibility_timeout_seconds,
+            max_attempts=max_attempts,
             redis_client=redis_client,
         )
     return MemoryWorkflowRunner(max_workers=max_workers, step_delay_seconds=step_delay_seconds)

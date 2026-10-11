@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Callable
 
@@ -28,9 +29,34 @@ def process_job(
     scope_token = set_workspace_scope(job.tenant_id, job.owner_id)
     repo = repository_factory()
     final_task = None
+    heartbeat_stop = threading.Event()
+
+    def heartbeat_loop() -> None:
+        interval = queue.lease_heartbeat_interval_seconds
+        while not heartbeat_stop.wait(interval):
+            try:
+                if not queue.renew_lease(job.job_id, job.worker_id):
+                    logger.warning("workflow_lease_heartbeat_stopped job_id=%s", job.job_id)
+                    return
+            except Exception:  # noqa: BLE001
+                logger.exception("workflow_lease_heartbeat_failed job_id=%s", job.job_id)
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name=f"workflow-lease-{job.job_id}",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    def stop_heartbeat() -> None:
+        heartbeat_stop.set()
+        if heartbeat_thread.is_alive() and heartbeat_thread is not threading.current_thread():
+            heartbeat_thread.join(timeout=max(1.0, queue.lease_heartbeat_interval_seconds + 1.0))
+
     try:
         while True:
             if queue.is_cancel_requested(job.job_id):
+                stop_heartbeat()
                 job = queue.complete(job, status="cancelled")
                 break
 
@@ -48,6 +74,7 @@ def process_job(
                         "action": job.action,
                     },
                 )
+                stop_heartbeat()
                 job = queue.complete(job, status="failed", error=str(error))
                 break
 
@@ -55,6 +82,7 @@ def process_job(
             phase = (final_task or {}).get("snapshot", {}).get("phase")
             if phase != "running":
                 status = "failed" if phase == "failed" else "succeeded"
+                stop_heartbeat()
                 job = queue.complete(job, status=status)
                 break
 
@@ -73,6 +101,9 @@ def process_job(
                 "finishedAt": job.finished_at,
                 "lastError": job.last_error,
                 "steps": job.steps,
+                "attempts": job.attempts,
+                "maxAttempts": job.max_attempts,
+                "workerId": job.worker_id,
             }
         )
         repo.add_audit_event(
@@ -102,4 +133,5 @@ def process_job(
             )
         return job
     finally:
+        stop_heartbeat()
         reset_workspace_scope(scope_token)

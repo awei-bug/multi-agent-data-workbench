@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -132,6 +133,105 @@ class RedisQueueTest(unittest.TestCase):
         self.assertEqual(view["backend"], "redis")
         self.assertEqual(view["status"], "succeeded")
         queue.shutdown(wait=False)
+
+
+    def test_stale_requeue_does_not_double_count_attempt(self) -> None:
+        fake = FakeRedis()
+        queue = RedisWorkflowQueue("redis://fake", redis_client=fake, max_attempts=3, visibility_timeout_seconds=30)
+        queue.submit(tenant_id="tenant-a", owner_id="user-a", action="start")
+        claimed = queue.claim_next(timeout_seconds=1)
+        assert claimed is not None
+        self.assertEqual(claimed.attempts, 1)
+
+        claimed.claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        queue._save_job(claimed)
+        self.assertEqual(queue.requeue_stale(), 1)
+        requeued = queue.get_job("tenant-a", "user-a")
+        assert requeued is not None
+        self.assertEqual(requeued.status, "queued")
+        self.assertEqual(requeued.attempts, 1)
+
+        claimed_again = queue.claim_next(timeout_seconds=1)
+        assert claimed_again is not None
+        self.assertEqual(claimed_again.attempts, 2)
+
+    def test_renew_lease_requires_matching_running_worker(self) -> None:
+        fake = FakeRedis()
+        queue = RedisWorkflowQueue("redis://fake", redis_client=fake, worker_id="worker-a")
+        queue.submit(tenant_id="tenant-a", owner_id="user-a", action="start")
+        claimed = queue.claim_next(timeout_seconds=1)
+        assert claimed is not None
+        original_claimed_at = claimed.claimed_at
+        time.sleep(0.002)
+
+        self.assertFalse(queue.renew_lease(claimed.job_id, "worker-b"))
+        self.assertTrue(queue.renew_lease(claimed.job_id, "worker-a"))
+        renewed = queue.get_job("tenant-a", "user-a")
+        assert renewed is not None
+        self.assertGreater(
+            datetime.fromisoformat(renewed.claimed_at),
+            datetime.fromisoformat(original_claimed_at),
+        )
+        queue.complete(renewed, status="succeeded")
+        self.assertFalse(queue.renew_lease(renewed.job_id, "worker-a"))
+
+    def test_public_view_exposes_retry_and_lease_diagnostics(self) -> None:
+        fake = FakeRedis()
+        queue = RedisWorkflowQueue("redis://fake", redis_client=fake, worker_id="worker-a", max_attempts=4)
+        queue.submit(tenant_id="tenant-a", owner_id="user-a", action="start")
+        claimed = queue.claim_next(timeout_seconds=1)
+        assert claimed is not None
+
+        view = queue.job_public_view(claimed)
+        self.assertEqual(view["attempts"], 1)
+        self.assertEqual(view["maxAttempts"], 4)
+        self.assertEqual(view["workerId"], "worker-a")
+        self.assertIsNotNone(view["claimedAt"])
+
+    def test_worker_renews_lease_during_long_step(self) -> None:
+        class FastHeartbeatQueue(RedisWorkflowQueue):
+            renewals = 0
+
+            @property
+            def lease_heartbeat_interval_seconds(self) -> float:
+                return 0.01
+
+            def renew_lease(self, job_id: str, worker_id: str | None = None) -> bool:
+                self.renewals += 1
+                return super().renew_lease(job_id, worker_id)
+
+        class SlowRepository:
+            def advance_workflow(self, chat_client):
+                del chat_client
+                time.sleep(0.04)
+                return {"id": "task-1", "snapshot": {"phase": "completed"}}
+
+            def set_execution_meta(self, payload):
+                self.execution = payload
+
+            def add_audit_event(self, *args):
+                self.audit = args
+
+        class Metrics:
+            def observe_workflow_job(self, status: str, steps: int = 0) -> None:
+                self.status = status
+                self.steps = steps
+
+        fake = FakeRedis()
+        queue = FastHeartbeatQueue("redis://fake", redis_client=fake, worker_id="worker-a")
+        queue.submit(tenant_id="tenant-a", owner_id="user-a", action="start")
+        claimed = queue.claim_next(timeout_seconds=1)
+        assert claimed is not None
+        result = process_job(
+            queue,
+            claimed,
+            repository_factory=SlowRepository,
+            chat_client=FakeChatClient(),
+            metrics=Metrics(),
+        )
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertGreaterEqual(queue.renewals, 1)
 
     def test_api_enqueue_and_worker_process_with_redis_backend(self) -> None:
         with TemporaryDirectory() as temp_dir:

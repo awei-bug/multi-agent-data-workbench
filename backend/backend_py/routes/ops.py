@@ -18,6 +18,7 @@ def register_ops_routes(app: FastAPI, ctx: AppContext) -> None:
             "baseUrl": ctx.base_url,
             "name": ctx.model,
             "timeoutSeconds": ctx.model_timeout_seconds,
+            "resilience": ctx.client.resilience_snapshot() if hasattr(ctx.client, "resilience_snapshot") else {},
         }
         try:
             database = ctx.repo.ping()
@@ -121,6 +122,7 @@ def register_ops_routes(app: FastAPI, ctx: AppContext) -> None:
             "baseUrl": ctx.base_url,
             "name": ctx.model,
             "timeoutSeconds": ctx.model_timeout_seconds,
+            "resilience": ctx.client.resilience_snapshot() if hasattr(ctx.client, "resilience_snapshot") else {},
         }
         try:
             database = ctx.repo.ping()

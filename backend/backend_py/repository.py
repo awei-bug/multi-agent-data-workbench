@@ -182,6 +182,24 @@ def _is_postgres_dsn(value: str | None) -> bool:
     return urlparse(value).scheme in {"postgres", "postgresql"}
 
 
+class _DbApiConnectionAdapter:
+    """Give psycopg2 DBAPI connections the execute API used by this repository."""
+
+    def __init__(self, connection) -> None:
+        self._connection = connection
+
+    def execute(self, statement: str, parameters=None):
+        cursor = self._connection.cursor()
+        cursor.execute(statement, parameters)
+        return cursor
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def close(self) -> None:
+        self._connection.close()
+
+
 class TaskRepository(UsersOrgsMixin):
     def __init__(
         self,
@@ -222,8 +240,7 @@ class TaskRepository(UsersOrgsMixin):
     def _connect(self):
         if self.use_postgres:
             if self._engine is not None:
-                # raw_connection returns a DBAPI connection compatible with existing SQL.
-                return self._engine.raw_connection()
+                return _DbApiConnectionAdapter(self._engine.raw_connection())
             try:
                 import psycopg
             except ModuleNotFoundError as error:

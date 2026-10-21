@@ -129,6 +129,23 @@ def list_connector_types() -> list[dict[str, Any]]:
                 {"key": "password", "label": "密码", "required": True, "secret": True},
             ],
         },
+        {
+            "type": "data_hub",
+            "name": "商品记忆库（data-hub）",
+            "description": (
+                "从商品知识数据中心只读拉取商品与指标记录，作为经营诊断的分析输入，"
+                "而不是上传 CSV。返回的字段不含本地推导结论，只含原始事实。"
+            ),
+            "configFields": [
+                {"key": "url", "label": "data-hub 地址", "required": True},
+                {"key": "tenantSlug", "label": "租户标识", "required": True},
+                {"key": "status", "label": "状态过滤（draft/approved/published）", "required": False},
+                {"key": "limit", "label": "最大条数", "required": False, "default": 200},
+            ],
+            "credentialFields": [
+                {"key": "token", "label": "X-Hub-Token", "required": False, "secret": True},
+            ],
+        },
     ]
 
 
@@ -557,12 +574,113 @@ def test_connection(connector_type: str, config: dict[str, Any], credentials: di
     }
 
 
+_DATA_HUB_LIST_FIELDS = (
+    "external_id",
+    "title",
+    "subtitle",
+    "title_en",
+    "price",
+    "currency",
+    "stock",
+    "category",
+    "brand",
+    "scenario",
+    "status",
+    "source",
+    "source_job_id",
+    "version",
+    "updated_at",
+)
+
+
+def _hub_scalar(value: object) -> str:
+    """把 data-hub 的列表型字段压平成可分析的字符串列。
+
+    数组与对象在 CSV 里没有位置，压成 `a;b` 或 `k=v;k=v`，否则前端表格列会炸。
+    空值返回空串而不是 "[]"，避免分析节点把字面量 "[]" 当成内容。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ";".join(str(item) for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return ";".join(f"{k}={v}" for k, v in value.items())
+    return str(value)
+
+
+def _data_hub_fetch(
+    config: dict[str, Any],
+    credentials: dict[str, Any],
+    *,
+    timeout_seconds: float = 20.0,
+) -> list[dict[str, str]]:
+    """只读拉取 data-hub 商品记录。
+
+    data-hub 默认跑在本机（127.0.0.1:8120），因此这里显式放开私有地址限制——
+    这是内网自建服务的既定部署形态，不是绕过 SSRF 防护。
+    """
+    url = _validate_public_url(str(config.get("url") or ""), allow_private_hosts=True)
+    tenant = str(config.get("tenantSlug") or config.get("tenant") or "").strip()
+    if not tenant:
+        raise ConnectorError("tenantSlug is required", "invalid_config")
+    # 区分「未配置」与「显式填 0」：后者是用户误操作，必须报错而不是悄悄用默认值。
+    raw_limit = config.get("limit")
+    limit = 200 if raw_limit in (None, "") else int(raw_limit)
+    if limit <= 0 or limit > 500:
+        raise ConnectorError("limit must be between 1 and 500", "invalid_config")
+
+    path = f"/hub/products?tenant={urlparse.quote(tenant)}&limit={limit}"
+    status = str(config.get("status") or "").strip()
+    if status:
+        path += f"&status={urlparse.quote(status, safe='')}"
+
+    headers = {"Accept": "application/json", "User-Agent": "workspace-connector/1.0"}
+    token = str((credentials or {}).get("token") or "").strip()
+    if token:
+        headers["X-Hub-Token"] = token
+    headers["X-Hub-Tenant"] = tenant
+
+    base = url.rstrip("/")
+    raw, content_type = _http_fetch_bytes(
+        f"{base}{path}",
+        method="GET",
+        headers=headers,
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ConnectorError(f"response is not valid JSON ({content_type})", "invalid_payload") from error
+    if not isinstance(payload, dict):
+        raise ConnectorError("data-hub payload must be an object", "invalid_payload")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise ConnectorError("data-hub payload has no items array", "invalid_payload")
+
+    rows: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, str] = {}
+        for field in _DATA_HUB_LIST_FIELDS:
+            row[field] = _hub_scalar(item.get(field))
+        for field in ("tags", "selling_points", "spec", "faq"):
+            row[field] = _hub_scalar(item.get(field))
+        if any(value for value in row.values()):
+            rows.append(row)
+    if not rows:
+        raise ConnectorError("data-hub returned no product rows", "empty_payload")
+    return rows
+
+
 def fetch_rows(connector_type: str, config: dict[str, Any], credentials: dict[str, Any]) -> list[dict[str, str]]:
     normalized = (connector_type or "").strip().lower()
     if normalized == "http_json":
         return _http_json_fetch(config or {}, credentials or {})
     if normalized == "postgres":
         return _postgres_fetch(config or {}, credentials or {})
+    if normalized == "data_hub":
+        return _data_hub_fetch(config or {}, credentials or {})
     if normalized == "web_page":
         payload = _web_page_fetch(config or {}, credentials or {})
         if payload["kind"] != "table":

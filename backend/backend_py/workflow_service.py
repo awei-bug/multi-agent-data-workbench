@@ -599,10 +599,14 @@ def advance_workflow_with_model(task: dict, chat_client) -> dict:
 
     report = next((item for item in reversed(updated["artifacts"]) if item.get("type") == "report_markdown"), None)
     analysis = next((item for item in reversed(updated["artifacts"]) if item.get("type") == "analysis"), None)
+    # 用 .get() 而不是下标：任务可能是新构造的 dict（例如由 data_hub 连接器直接生成、
+    # 或外部流程拼装），不带 summary 键。用下标会让整个工作流在最后一步崩掉，
+    # 而这一步前面的产物都白跑了。
+    current_summary = updated.get("summary")
     if report:
-        updated["summary"] = report.get("content", {}).get("markdown", updated["summary"])
+        updated["summary"] = report.get("content", {}).get("markdown", current_summary)
     elif analysis:
-        updated["summary"] = analysis.get("content", {}).get("summary", updated["summary"])
+        updated["summary"] = analysis.get("content", {}).get("summary", current_summary)
     snapshot["nodes"] = nodes
     updated["snapshot"] = snapshot
     updated["risks"] = snapshot["context"]["risks"]
